@@ -74,8 +74,8 @@ def test_app_runs_and_renders_in_tmux(tmux_session):
     _keys(tmux_session, "1", "2", "3", "Enter")
     out = _pane(tmux_session)
     assert "123" in out
-    assert "READY" in out
-    assert "A1" in out
+    assert "READY" in out          # control panel shows "A2  READY" after Enter
+    assert "A2" in out
 
 
 def test_slash_menu_in_tmux(tmux_session):
