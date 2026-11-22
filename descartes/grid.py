@@ -209,9 +209,9 @@ class Cell:
             d["raw"] = self.raw
         if self.kind != EMPTY:
             d["kind"] = self.kind
-        if self.value is not None and not isinstance(self.value, str):
-            d["value"] = self.value
-        elif self.kind == LABEL and self.value is not None:
+        if getattr(self.value, "_is_lotus_error", False):
+            d["error"] = self.value.code
+        elif self.value is not None:
             d["value"] = self.value
         if self.fmt is not None:
             d["fmt"] = self.fmt
@@ -225,10 +225,14 @@ class Cell:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Cell":
+        from .functions import Error
+        value = d.get("value")
+        if "error" in d:
+            value = Error(d["error"])
         return cls(
             raw=d.get("raw"),
             kind=d.get("kind", EMPTY),
-            value=d.get("value"),
+            value=value,
             fmt=d.get("fmt"),
             protected=bool(d.get("protected", False)),
             hidden=bool(d.get("hidden", False)),

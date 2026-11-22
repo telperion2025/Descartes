@@ -33,8 +33,10 @@ CELL_PROMPT = {"text": "", "kind": "cell"}
 MENU_TREE = [
     _m("WORKSHEET", [
         _m("GLOBAL", [
-            _m("LABEL-PREFIX", action="wg_label_prefix"),
-            _m("COL-PREFIX", action="wg_col_prefix"),
+            _m("LABEL-PREFIX", action="wg_label_prefix",
+               prompt=[{"text": "Label prefix:", "kind": "choice", "choices": ["'", "^", '"']}]),
+            _m("COL-PREFIX", action="wg_col_prefix",
+               prompt=[{"text": "Column prefix:", "kind": "choice", "choices": ["'", "^", '"']}]),
             _m("ZERO-SUPPRESS", action="wg_zero_suppress"),
             _m("FORMAT", action="wg_format"),
             _m("RECALCULATION", [

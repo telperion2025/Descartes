@@ -352,11 +352,19 @@ def frequency(sheet: Worksheet, engine: Engine, data_rng, bin_rng):
                 break
         if not placed:
             counts[-1] += 1
-    out_c = bc2 + 1
-    for i, cnt in enumerate(counts):
-        r = br1 + i if i < len(bins) else br2 + 1
-        sheet.set_entry(out_c, r, str(cnt))
-        engine.note_edit((out_c, r))
+    if br1 == br2:
+        # horizontal bin row: counts go in the row below
+        for i, cnt in enumerate(counts):
+            c = bc1 + i
+            sheet.set_entry(c, br2 + 1, str(cnt))
+            engine.note_edit((c, br2 + 1))
+    else:
+        # vertical bin column: counts go in the column to the right
+        out_c = bc2 + 1
+        for i, cnt in enumerate(counts):
+            r = br1 + i
+            sheet.set_entry(out_c, r, str(cnt))
+            engine.note_edit((out_c, r))
     engine.recalc()
     return counts
 

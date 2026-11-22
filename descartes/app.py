@@ -171,8 +171,10 @@ class App:
             "w_titles_clear": lambda a: self.set_titles(None),
             "w_status": lambda a: self.cmd_status(),
             "w_page": lambda a: self.message_msg(f"Page: {self.print_settings['lines_page']} lines"),
-            "wg_label_prefix": lambda a: self.message_msg("Label prefix: " + self.sheet.label_prefix),
-            "wg_col_prefix": lambda a: self.message_msg("Column prefix: " + self.sheet.col_prefix),
+            "wg_label_prefix": lambda a: (setattr(self.sheet, "label_prefix", a[0]),
+                                          self.message_msg("Label prefix: " + a[0])),
+            "wg_col_prefix": lambda a: (setattr(self.sheet, "col_prefix", a[0]),
+                                        self.message_msg("Column prefix: " + a[0])),
             "wg_zero_suppress": lambda a: setattr(self.sheet, "zero_suppress", not self.sheet.zero_suppress),
             "wg_format": lambda a: self.message_msg("Global format set"),
             "wg_recalc_auto": lambda a: self.set_recalc("auto", 0),
@@ -364,6 +366,10 @@ class App:
             self.move(max(0, c - 1), r)
         elif name in ("RIGHT", "TAB"):
             self.move(min(MAX_COLS - 1, c + 1), r)
+        elif name == "CTRL_LEFT":
+            self.jump_edge(-1)
+        elif name == "CTRL_RIGHT":
+            self.jump_edge(1)
         elif name == "HOME":
             self.move(c, 0)
         elif name == "END":
@@ -389,23 +395,42 @@ class App:
 
     def move(self, c, r):
         self.cur = (c, r)
-        h_rows = ROW_GRID1 - ROW_GRID0 + 1
-        if self.split == "H":
-            h_rows = (ROW_GRID1 - ROW_GRID0 + 1) // 2 - 1
-        if r < self.top[1]:
-            self.top = (self.top[0], r)
-        elif r >= self.top[1] + h_rows:
-            self.top = (self.top[0], r - h_rows + 1)
-        w = self.screen.size()[1]
+        pane = self.pane_layout()[min(self.active_pane, len(self.pane_layout()) - 1)]
+        h_rows = pane["y1"] - pane["y0"] + 1
+        pane_w = pane["x1"] - pane["x0"]
+        top = pane["top"]
+        if r < top[1]:
+            new_top = (top[0], r)
+        elif r >= top[1] + h_rows - min(self.titles[1], h_rows):
+            new_top = (top[0], r - h_rows + 1 + min(self.titles[1], h_rows))
+        else:
+            new_top = top
+        # horizontal scroll: keep the cursor column inside the pane
         x = GUTTER_W
-        tc = self.top[0]
-        while tc < c and x + self.sheet.col_width(tc) < w:
+        tc = new_top[0]
+        while tc < c and x + self.sheet.col_width(tc) < pane_w:
             x += self.sheet.col_width(tc)
             tc += 1
         if tc < c:
-            self.top = (c, self.top[1])
+            new_top = (c, new_top[1])
+        if self.active_pane == 0:
+            self.top = new_top
+        else:
+            self.top2 = new_top
         if self.sync_windows and self.split:
             self.top2 = self.top
+
+    def jump_edge(self, direction):
+        """Ctrl+Left/Right: jump to the edge of the data region."""
+        c, r = self.cur
+        (c1, _), (c2, _) = self.sheet.used_bounds()
+        if not self.sheet.cells:
+            target = 0 if direction < 0 else MAX_COLS - 1
+        elif direction < 0:
+            target = c1 if c > c1 else 0
+        else:
+            target = min(MAX_COLS - 1, c2 + 1) if c < c2 else MAX_COLS - 1
+        self.move(target, r)
 
     def start_edit(self):
         cell = self.sheet.cell(*self.cur)
@@ -704,24 +729,25 @@ class App:
         if y == ROW_MENUBAR:
             self.open_menu_at(x)
             return
-        if y == ROW_HEADERS:
-            c = self.col_at_x(x)
+        pane = self.pane_layout()[min(self.active_pane, len(self.pane_layout()) - 1)]
+        if y == pane["header_y"] and pane["x0"] <= x < pane["x1"]:
+            c = self.col_at_x(x, pane)
             if c is not None:
                 if count >= 2:
                     self.autofit_col(c)
                 else:
                     self.move(c, self.cur[1])
             return
-        if x < GUTTER_W:
-            r = self.row_at_y(y)
+        if pane["x0"] <= x < pane["x0"] + GUTTER_W and pane["y0"] <= y <= pane["y1"]:
+            r = self.row_at_y(y, pane)
             if r is not None:
                 self.move(self.cur[0], r)
             return
         if y in (ROW_CONTROL, ROW_CONTENT):
             self.start_edit()
             return
-        if ROW_GRID0 <= y <= ROW_GRID1:
-            cell = self.cell_at(x, y)
+        if pane["y0"] <= y <= pane["y1"] and pane["x0"] <= x < pane["x1"]:
+            cell = self.cell_at(x, y, pane)
             if cell is None:
                 return
             if self.mode == POINT:
@@ -771,9 +797,10 @@ class App:
             xx += len(label) + 2
         return None
 
-    def col_at_x(self, x):
-        c = self.top[0]
-        xx = GUTTER_W
+    def col_at_x(self, x, pane=None):
+        pane = pane or self.pane_layout()[0]
+        c = pane["top"][0]
+        xx = pane["x0"] + GUTTER_W
         while c < MAX_COLS:
             cw = self.sheet.col_width(c)
             if xx <= x < xx + cw:
@@ -782,14 +809,18 @@ class App:
             c += 1
         return None
 
-    def row_at_y(self, y):
-        if ROW_GRID0 <= y <= ROW_GRID1:
-            return self.top[1] + (y - ROW_GRID0)
+    def row_at_y(self, y, pane=None):
+        pane = pane or self.pane_layout()[0]
+        if pane["y0"] <= y <= pane["y1"]:
+            rows = self.visible_rows(pane["idx"])
+            i = y - pane["y0"]
+            return rows[i] if 0 <= i < len(rows) else None
         return None
 
-    def cell_at(self, x, y):
-        c = self.col_at_x(x)
-        r = self.row_at_y(y)
+    def cell_at(self, x, y, pane=None):
+        pane = pane or self.pane_layout()[0]
+        c = self.col_at_x(x, pane)
+        r = self.row_at_y(y, pane)
         if c is None or r is None:
             return None
         return (c, r)
@@ -833,20 +864,37 @@ class App:
         self.message_msg(f"Titles: {self.titles[0]} cols, {self.titles[1]} rows")
 
     def pane_layout(self):
+        """Pane rects for screen drawing: top (scroll origin), x0/y0/x1/y1 and
+        header_y (the row holding that pane's column headers)."""
+        h, w = self.screen.size()
         if self.split is None:
-            return [{"top": self.top, "y0": ROW_GRID0, "y1": ROW_GRID1}]
+            return [{"top": self.top, "x0": 0, "y0": ROW_GRID0, "x1": w, "y1": ROW_GRID1,
+                     "header_y": ROW_HEADERS, "idx": 0}]
         if self.split == "H":
             mid = (ROW_GRID0 + ROW_GRID1) // 2
-            return [{"top": self.top, "y0": ROW_GRID0, "y1": mid - 1},
-                    {"top": self.top2, "y0": mid + 1, "y1": ROW_GRID1}]
-        return [{"top": self.top, "y0": ROW_GRID0, "y1": ROW_GRID1}]
+            return [{"top": self.top, "x0": 0, "y0": ROW_GRID0, "x1": w, "y1": mid - 1,
+                     "header_y": ROW_HEADERS, "idx": 0},
+                    {"top": self.top2, "x0": 0, "y0": mid + 1, "x1": w, "y1": ROW_GRID1,
+                     "header_y": mid, "idx": 1}]
+        half = w // 2
+        return [{"top": self.top, "x0": 0, "y0": ROW_GRID0, "x1": half, "y1": ROW_GRID1,
+                 "header_y": ROW_HEADERS, "idx": 0},
+                {"top": self.top2, "x0": half, "y0": ROW_GRID0, "x1": w, "y1": ROW_GRID1,
+                 "header_y": ROW_HEADERS, "idx": 1}]
 
-    def visible_rows(self):
-        n = ROW_GRID1 - ROW_GRID0 + 1
-        if self.split == "H":
-            n = (ROW_GRID1 - ROW_GRID0 + 1) // 2 - 1
-        tr = self.top[1]
-        trows = self.titles[1]
+    def pane_top(self, idx):
+        panes = self.pane_layout()
+        if idx < len(panes):
+            return panes[idx]["top"]
+        return self.top
+
+    def visible_rows(self, pane_idx=0):
+        """Sheet rows shown in a pane: frozen title rows pinned on top, then
+        the scrolled window."""
+        pane = self.pane_layout()[pane_idx] if self.pane_layout() else None
+        n = (pane["y1"] - pane["y0"] + 1) if pane else ROW_GRID1 - ROW_GRID0 + 1
+        tr = self.pane_top(pane_idx)[1]
+        trows = min(self.titles[1], n)
         rows = list(range(tr, min(MAX_ROWS, tr + max(0, n - trows))))
         return list(range(0, trows)) + rows
 

@@ -449,6 +449,17 @@ class RangeValue:
         return f"RangeValue({col_letters(self.c1)}{self.r1+1}..{col_letters(self.c2)}{self.r2+1})"
 
 
+class RefVal:
+    """A cell/range reference passed structurally (for @CELL)."""
+
+    __slots__ = ("c", "r")
+    _is_ref = True
+
+    def __init__(self, c, r):
+        self.c = c
+        self.r = r
+
+
 class Ctx:
     __slots__ = ("engine", "fkey")
 
@@ -568,6 +579,21 @@ def compile_node(node):
         return lambda ctx: _pct(f(ctx), ctx)
     if kind == "func":
         name = node[1]
+        if name == "CELL":
+            # @CELL needs the reference itself, not its value
+            parts = []
+            for a in node[2]:
+                if a[0] == "cell":
+                    parts.append(("static", RefVal(a[1], a[2])))
+                elif a[0] == "range":
+                    parts.append(("static", RefVal(a[1][0], a[1][1])))
+                else:
+                    parts.append(("fn", compile_node(a)))
+
+            def call_cell(ctx, parts=parts, name=name):
+                args = [p[1] if p[0] == "static" else p[1](ctx) for p in parts]
+                return F.call(name, args, ctx)
+            return call_cell
         argfns = [compile_node(a) for a in node[2]]
         return lambda ctx: F.call(name, [af(ctx) for af in argfns], ctx)
     raise FormulaSyntaxError(f"cannot compile {kind}")

@@ -153,8 +153,8 @@ The full reference with every prompt is in the
 - `/FILE SAVE name` writes the native **.vg1** (JSON) format: cell raw text, formats,
   column widths, named ranges, recalc mode, cursor/window state, graph definitions —
   with deterministic ordering for clean diffs. `/FILE LOAD` reads `.vg1`, `.wk1`/`.wks`
-  (Lotus 1-2-3 Release 2 binary, formulas best-effort translated from RPN; WK3 is read
-  as its first sheet), `.dif`, and delimited `.txt`.
+  (Lotus 1-2-3 Release 2 binary, formulas best-effort translated from RPN; WK3/WK4 files
+  are accepted with unknown records skipped), `.dif`, and delimited `.txt`.
 - `/FILE XTRACT` exports a range as WK1, DIF, or text.
 - `/FILE COMBINE COPY|ADD|SUBTRACT` merges another file into the current sheet.
 - `/FILE IMPORT DIF|TEXT|NUMBERS` imports at a chosen anchor cell. DIF and text import

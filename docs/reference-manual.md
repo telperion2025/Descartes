@@ -280,8 +280,11 @@ Cells are ordered deterministically by (sheet, row, col) for clean diffs.
 
 Record stream: `{u16 opcode LE, u16 length LE, payload[length]}`, terminated by EOF
 (0x0001). BOF (0x0000) carries the version word (writer emits 0x0406; readers accept
-0x0404/0x0405/0x0406 and the WK3-style 4-byte `0x0005 0x0806`, reading WK3 as first sheet
-only). Cell records (payload = fmt byte, col u16, row u16, ...):
+0x0404/0x0405/0x0406 and the WK3-style 4-byte `0x0005 0x0806`). Cell records are decoded
+for the WK1/WKS opcode family below (payload = fmt byte, col u16, row u16, ...); WK3/WK4
+files are accepted and their unknown records skipped record-by-record, which decodes the
+first sheet's cell records when they use WK1-family opcodes — other records are ignored
+gracefully (documented limitation). Cell records:
 
 | opcode | record | payload after col/row |
 | --- | --- | --- |

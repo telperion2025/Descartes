@@ -179,6 +179,9 @@ _RAW_SEQUENCES = {
     "\x1b[2~": "INS", "\x1b[3~": "DEL",
     "\x1bOA": "UP", "\x1bOB": "DOWN", "\x1bOC": "RIGHT", "\x1bOD": "LEFT",
     "\x1bOH": "HOME", "\x1bOF": "END",
+    "\x1b[1;5D": "CTRL_LEFT", "\x1b[1;5C": "CTRL_RIGHT",
+    "\x1b[1;5A": "CTRL_UP", "\x1b[1;5B": "CTRL_DOWN",
+    "\x1b[5D": "CTRL_LEFT", "\x1b[5C": "CTRL_RIGHT",
 }
 
 _KEY_NAMES = {
@@ -242,6 +245,8 @@ def read_event(stdscr, escdelay_ms: int = 25) -> KeyEvent | None:
                     break  # complete legacy mouse report
         finally:
             stdscr.timeout(-1)
+        if not seq:
+            return KeyEvent("key", name="ESC")   # lone ESC
         text = "\x1b" + bytes(seq).decode("latin-1")
         parser = MouseParser()
         events, junk = parser.feed(text.encode("latin-1"))
@@ -250,7 +255,7 @@ def read_event(stdscr, escdelay_ms: int = 25) -> KeyEvent | None:
         name = _RAW_SEQUENCES.get(text)
         if name:
             return KeyEvent("key", name=name)
-        if junk:
+        if junk and junk[0] >= 32:
             if len(junk) == 1:
                 ch = junk.decode("latin-1")
                 return KeyEvent("char", ch=ch, name="ALT+" + ch)

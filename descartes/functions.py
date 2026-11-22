@@ -22,6 +22,7 @@ class Error:
     """A 1-2-3 error value: ERR or NA."""
 
     __slots__ = ("code",)
+    _is_lotus_error = True   # duck-typing marker (survives module re-import)
 
     def __init__(self, code: str = "ERR"):
         self.code = code
@@ -935,6 +936,42 @@ def _rate(args, ctx):
 # ---------------------------------------------------------------------------
 # Misc database helpers used by data_cmd (exposed for @functions parity)
 # ---------------------------------------------------------------------------
+
+@func("CELL")
+def _cell_fn(args, ctx):
+    from .grid import col_letters, format_address
+    attr = to_text(_scalar(args[0], ctx)).upper() if args else ""
+    ref = args[1] if len(args) > 1 else None
+    if getattr(ref, "_is_ref", False):
+        c, r = ref.c, ref.r
+    else:
+        c, r = ctx.fkey
+    cell = ctx.engine.sheet.cell(c, r)
+    kind = cell.kind if cell is not None else "EMPTY"
+    if attr == "ADDRESS":
+        return format_address(c, r)
+    if attr == "ROW":
+        return float(r + 1)
+    if attr == "COL":
+        return col_letters(c)
+    if attr == "TYPE":
+        return {"LABEL": "label", "NUMBER": "number", "FORMULA": "formula",
+                "EMPTY": "empty"}.get(kind, "empty")
+    if attr == "CONTENTS":
+        return cell.raw if cell is not None and cell.raw is not None else ""
+    if attr == "PREFIX":
+        if cell is not None and cell.raw and cell.raw[0] in "'^\"":
+            return cell.raw[0]
+        return ctx.engine.sheet.label_prefix if kind == "LABEL" else ""
+    if attr == "PROTECT":
+        return "protected" if (cell is not None and cell.protected) else "unprotected"
+    if attr == "WIDTH":
+        return float(ctx.engine.sheet.col_width(c))
+    if attr == "FORMAT":
+        f = cell.fmt if cell is not None else None
+        return (f or {}).get("type", "general")
+    return ERR
+
 
 @func("COLS")
 def _cols(args, ctx):

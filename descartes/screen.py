@@ -179,9 +179,9 @@ class Screen:
     # -- pieces -------------------------------------------------------------
 
     def draw_menubar(self, app, active):
-        attr = self.a(P_MENU) if active else self.a(P_BG)
-        self.put(ROW_MENUBAR, 0, " " * self.size()[1], self.a(P_BG) if not active else self.a(P_MENU))
+        w = self.size()[1]
         if active:
+            self.put(ROW_MENUBAR, 0, " " * w, self.a(P_MENU))
             x = 1
             for i, label in enumerate(TOP_LABELS):
                 is_cur = app.menu.depth >= 1 and app.menu.frames[0][1] == i
@@ -189,7 +189,8 @@ class Screen:
                 self.put(ROW_MENUBAR, x, " " + label + " ", a)
                 x += len(label) + 2
         else:
-            self.put(ROW_MENUBAR, 1, "Descartes 1-2-3", self.a(P_BG))
+            # READY: blank blue bar (spec 5)
+            self.put(ROW_MENUBAR, 0, " " * w, self.a(P_BG))
 
     def draw_control(self, app):
         addr = format_address(app.cur[0], app.cur[1])
@@ -232,37 +233,55 @@ class Screen:
         return x
 
     def draw_headers(self, app):
-        w = self.size()[1]
-        self.put(ROW_HEADERS, 0, " " * GUTTER_W, self.a(P_HEAD))
-        c = app.top[0]
-        x = GUTTER_W
-        while x < w and c < MAX_COLS:
+        """One header row per pane (panes share ROW_HEADERS unless split H)."""
+        for pane in app.pane_layout():
+            self._draw_pane_headers(app, pane)
+
+    def _draw_pane_headers(self, app, pane):
+        x0, x1, hy = pane["x0"], pane["x1"], pane["header_y"]
+        self.put(hy, x0, " " * min(GUTTER_W, x1 - x0), self.a(P_HEAD))
+        c = pane["top"][0]
+        x = x0 + GUTTER_W
+        tcols = app.titles[0]
+        while x < x1 and c < MAX_COLS:
             cw = app.sheet.col_width(c)
-            letters = col_letters(c)
-            label = letters.center(cw)[:cw]
-            a = self.a(P_HEAD_HI) if c == app.cur[0] else self.a(P_HEAD)
-            self.put(ROW_HEADERS, x, label, a)
+            label = col_letters(c).center(cw)[:cw]
+            is_cur = c == app.cur[0]
+            is_title = c < tcols
+            a = self.a(P_HEAD_HI) if (is_cur or is_title) else self.a(P_HEAD)
+            self.put(hy, x, label, a)
             x += cw
             c += 1
 
     def draw_grid(self, app):
         h, w = self.size()
         bg = self.a(P_BG)
-        # gutter + rows
-        nrows = ROW_GRID1 - ROW_GRID0 + 1
-        tr = app.top[1]
-        for i in range(nrows):
-            y = ROW_GRID0 + i
-            r = tr + i
-            if r >= 8192:
+        for pane in app.pane_layout():
+            self._draw_pane(app, pane, bg)
+        # fill any leftover grid area, but never over a pane's header row
+        covered = set()
+        for pane in app.pane_layout():
+            for y in range(pane["y0"], pane["y1"] + 1):
+                covered.add(y)
+            covered.add(pane["header_y"])
+        for y in range(ROW_GRID0, ROW_GRID1 + 1):
+            if y not in covered:
                 self.put(y, 0, " " * w, bg)
-                continue
+
+    def _draw_pane(self, app, pane, bg):
+        x0, x1 = pane["x0"], pane["x1"]
+        rows = app.visible_rows(pane["idx"])
+        tcols = app.titles[0]
+        for i, r in enumerate(rows):
+            y = pane["y0"] + i
+            if y > pane["y1"] or r >= 8192:
+                break
             row_hi = r == app.cur[1]
             gattr = self.a(P_HEAD_HI) if row_hi else self.a(P_HEAD)
-            self.put(y, 0, f"{r+1:>6}|", gattr)
-            c = app.top[0]
-            x = GUTTER_W
-            while x < w and c < MAX_COLS:
+            self.put(y, x0, f"{r+1:>6}|", gattr)
+            c = pane["top"][0]
+            x = x0 + GUTTER_W
+            while x < x1 and c < MAX_COLS:
                 cw = app.sheet.col_width(c)
                 cell = app.sheet.cell(c, r)
                 text, align = self._cell_text(app, cell, c, r)
@@ -275,14 +294,16 @@ class Screen:
                 a = bg
                 if (c, r) == app.cur:
                     a = self.a(P_CURSOR)
+                elif c < tcols:
+                    a = self.a(P_HEAD_HI)
                 elif app.mode == "POINT" and app.point_range and \
                         _in_range(app.point_range, c, r):
                     a = self.a(P_HILITE)
                 self.put(y, x, text[:cw], a)
                 x += cw
                 c += 1
-            if x < w:
-                self.put(y, x, " " * (w - x), bg)
+            if x < x1:
+                self.put(y, x, " " * (x1 - x), bg)
 
     def _cell_text(self, app, cell, c, r):
         """-> (display text, alignment)"""

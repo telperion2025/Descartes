@@ -21,7 +21,7 @@ class TestLayout:
         app, win = make_app()
         snap = screen_text(app, win)
         lines = snap.split("\n")
-        assert lines[0].strip() == "Descartes 1-2-3"          # row 1 menu bar
+        assert lines[0].strip() == ""                          # row 1: blank blue bar in READY
         assert "A1" in lines[1] and "READY" in lines[1]        # row 2 control panel
         assert lines[3][11] == "A" and lines[3][7] == " "      # row 4 header 'A' centered in col
         assert lines[4].startswith("     1|")                  # row 5 gutter
