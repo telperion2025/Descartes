@@ -33,14 +33,16 @@ ROW_ERROR = 24
 GUTTER_W = 7
 MIN_W, MIN_H = 80, 25
 
-# color pair ids (spec 5.1)
-P_BG = 1        # white / blue   worksheet background
-P_MENU = 2      # black / cyan   menu bar text, dropdowns
-P_HILITE = 3    # black / yellow highlighted menu item / cursor in dialogs
-P_HEAD = 4      # white / cyan   column headers, row gutter
-P_HEAD_HI = 5   # black / cyan   highlighted column header / row
-P_ERROR = 6     # red / white    error messages
-P_CURSOR = 7    # bright-yellow / blue  cursor cell
+# color pair ids (matches the real Lotus 1-2-3 3.x DOS look: black worksheet,
+# blue menu bar, cyan control panel, reverse-video cursor cell)
+P_BG = 1        # white / black   worksheet background, headers, row gutter
+P_MENU = 2      # white / blue    menu bar (blank blue in READY) and dropdowns
+P_HILITE = 3    # black / white   highlighted menu item, POINT range, dialog cursor
+P_HEAD = 4      # white / black   column headers, row gutter
+P_HEAD_HI = 5   # white / black + bold   current column header / row, title cols
+P_ERROR = 6     # red / white     error messages
+P_CURSOR = 7    # black / white   cursor cell (reverse video, as in 1-2-3)
+P_PANEL = 8     # black / cyan    control panel (rows 2-3) and indicator line
 
 
 class TerminalTooSmall(Exception):
@@ -74,33 +76,36 @@ class Screen:
             curses.start_color()
             try:
                 curses.use_default_colors()
-                bg = -1
             except curses.error:
-                bg = curses.COLOR_BLUE
-            def pair(pid, fg, bgc):
+                pass
+
+            def pair(pid, fg, bgc, bold=False):
                 try:
                     curses.init_pair(pid, fg, bgc)
-                    self.attrs[pid] = curses.color_pair(pid)
+                    a = curses.color_pair(pid)
+                    self.attrs[pid] = a | curses.A_BOLD if bold else a
                 except curses.error:
                     self.attrs[pid] = curses.A_REVERSE
-            pair(P_BG, curses.COLOR_WHITE, curses.COLOR_BLUE if bg == -1 else bg)
-            pair(P_MENU, curses.COLOR_BLACK, curses.COLOR_CYAN)
-            pair(P_HILITE, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-            pair(P_HEAD, curses.COLOR_WHITE, curses.COLOR_CYAN)
-            pair(P_HEAD_HI, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            pair(P_BG, curses.COLOR_WHITE, curses.COLOR_BLACK)
+            pair(P_MENU, curses.COLOR_WHITE, curses.COLOR_BLUE)
+            pair(P_HILITE, curses.COLOR_BLACK, curses.COLOR_WHITE, bold=True)
+            pair(P_HEAD, curses.COLOR_WHITE, curses.COLOR_BLACK)
+            pair(P_HEAD_HI, curses.COLOR_WHITE, curses.COLOR_BLACK, bold=True)
             pair(P_ERROR, curses.COLOR_RED, curses.COLOR_WHITE)
-            pair(P_CURSOR, curses.COLOR_YELLOW, curses.COLOR_BLUE if bg == -1 else bg)
+            pair(P_CURSOR, curses.COLOR_BLACK, curses.COLOR_WHITE, bold=True)
+            pair(P_PANEL, curses.COLOR_BLACK, curses.COLOR_CYAN)
         else:
-            self.attrs = {pid: 0 for pid in (P_BG, P_MENU, P_HILITE, P_HEAD,
-                                            P_HEAD_HI, P_ERROR, P_CURSOR)}
-        if not self.has_color:
-            # mono terminals use A_REVERSE for pairs 2, 3, 5, 7
-            self.attrs[P_MENU] = curses.A_REVERSE
-            self.attrs[P_HILITE] = curses.A_REVERSE | curses.A_BOLD
-            self.attrs[P_HEAD] = 0
-            self.attrs[P_HEAD_HI] = curses.A_REVERSE
-            self.attrs[P_ERROR] = curses.A_REVERSE
-            self.attrs[P_CURSOR] = curses.A_REVERSE | curses.A_BOLD
+            # mono terminals: reverse video for menu/panel/highlight/cursor
+            self.attrs = {
+                P_BG: 0,
+                P_MENU: curses.A_REVERSE,
+                P_HILITE: curses.A_REVERSE | curses.A_BOLD,
+                P_HEAD: 0,
+                P_HEAD_HI: curses.A_BOLD,
+                P_ERROR: curses.A_REVERSE,
+                P_CURSOR: curses.A_REVERSE | curses.A_BOLD,
+                P_PANEL: curses.A_REVERSE,
+            }
         self.attrs["bold"] = curses.A_BOLD
         self.attrs["plain"] = 0
 
@@ -189,14 +194,15 @@ class Screen:
                 self.put(ROW_MENUBAR, x, " " + label + " ", a)
                 x += len(label) + 2
         else:
-            # READY: blank blue bar (spec 5)
-            self.put(ROW_MENUBAR, 0, " " * w, self.a(P_BG))
+            # READY: blank blue bar
+            self.put(ROW_MENUBAR, 0, " " * w, self.a(P_MENU))
 
     def draw_control(self, app):
         addr = format_address(app.cur[0], app.cur[1])
         mode = app.mode
         left = f"{addr}  {mode}"
-        self.put(ROW_CONTROL, 0, left.ljust(30), self.a(P_BG))
+        self.put(ROW_CONTROL, 0, " " * self.size()[1], self.a(P_PANEL))
+        self.put(ROW_CONTROL, 0, left.ljust(30), self.a(P_PANEL))
         right = ""
         if app.mode in ("VALUE", "LABEL", "EDIT"):
             right = app.entry
@@ -210,7 +216,7 @@ class Screen:
         elif app.mode == "ERROR":
             right = app.error
         w = self.size()[1]
-        self.put(ROW_CONTROL, 30, right[: max(0, w - 30)], self.a(P_BG))
+        self.put(ROW_CONTROL, 30, right[: max(0, w - 30)], self.a(P_PANEL))
 
     def draw_content_line(self, app):
         w = self.size()[1]
@@ -223,7 +229,8 @@ class Screen:
             text = cell.raw if cell is not None and cell.raw is not None else ""
             if cell is not None and cell.hidden and cell.kind == "FORMULA":
                 text = "*****"
-        self.put(ROW_CONTENT, 0, text[:w], self.a(P_BG))
+        self.put(ROW_CONTENT, 0, " " * w, self.a(P_PANEL))
+        self.put(ROW_CONTENT, 0, text[:w], self.a(P_PANEL))
 
     def _col_x(self, app, c):
         x = GUTTER_W
@@ -333,14 +340,15 @@ class Screen:
         left = " ".join(inds)
         now = datetime.datetime.now()
         clock = now.strftime("%H:%M:%S")
-        self.put(ROW_INDICATOR, 0, " " * w, self.a(P_BG))
-        self.put(ROW_INDICATOR, 0, left, self.a(P_BG))
-        self.put(ROW_INDICATOR, w - 9, clock, self.a(P_BG))
+        self.put(ROW_INDICATOR, 0, " " * w, self.a(P_PANEL))
+        self.put(ROW_INDICATOR, 0, left, self.a(P_PANEL))
+        self.put(ROW_INDICATOR, w - 9, clock, self.a(P_PANEL))
 
     def draw_message(self, app):
         w = self.size()[1]
         self.put(ROW_MESSAGE, 0, (app.message or "")[:w], self.a(P_BG))
         err = app.error or ""
+        self.put(ROW_ERROR, 0, " " * w, self.a(P_BG))
         self.put(ROW_ERROR, 0, err[:w], self.a(P_ERROR) if err else self.a(P_BG))
 
     # -- menus --------------------------------------------------------------

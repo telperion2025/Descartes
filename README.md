@@ -2,7 +2,8 @@
 
 A Unix (BSD/macOS) and Linux terminal clone of **Lotus 1-2-3 Release 3.1**, written in
 Python 3 with the standard-library `curses` module only — no pip dependencies, no GUI
-toolkit. It reproduces the faithful VGA/DOS text look: the cyan/blue control panel, slash
+toolkit. It reproduces the faithful VGA/DOS text look of Lotus 1-2-3 3.x: black worksheet
+with white text, reverse-video cursor cell, blue menu bar, cyan control panel, slash
 pulldown menus, the two-mode (READY / VALUE / EDIT / MENU / POINT) state machine, `@`
 functions, range operations, text-mode graphs, a database (`/DATA`), and mouse support.
 

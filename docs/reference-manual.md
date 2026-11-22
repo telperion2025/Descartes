@@ -154,17 +154,20 @@ Fixed 80-column layout, absolute coordinates (0-based rows in code, 1-based as p
 | 24 | message line |
 | 25 | error line |
 
-Color pairs (defined once in `screen.py`; mono terminals use `A_REVERSE` for 2, 3, 5, 7):
+Color pairs (defined once in `screen.py`), matching the real Lotus 1-2-3 3.x DOS
+look: black worksheet, blue menu bar, cyan control panel, reverse-video cursor cell.
+Mono terminals use `A_REVERSE` for the menu/panel/highlight/cursor pairs.
 
 | pair | fg/bg | used for |
 | --- | --- | --- |
-| 1 | white/blue | worksheet background |
-| 2 | black/cyan | menu bar text, dropdown boxes |
-| 3 | black/yellow (mono: reverse) | highlighted menu item, dialog cursor, POINT range |
-| 4 | white/cyan | column headers, row gutter |
-| 5 | black/cyan | highlighted column header / row |
+| 1 | white/black | worksheet background, column headers, row gutter |
+| 2 | white/blue | menu bar (blank blue bar in READY) and dropdown boxes |
+| 3 | black/white + bold | highlighted menu item, dialog cursor, POINT range |
+| 4 | white/black | column headers, row gutter |
+| 5 | white/black + bold | current column header / row, frozen title cols |
 | 6 | red/white | error messages |
-| 7 | bright-yellow/blue | cursor cell |
+| 7 | black/white + bold | cursor cell (reverse video, as in 1-2-3) |
+| 8 | black/cyan | control panel (rows 2-3) and indicator line (row 23) |
 
 ## 7. Slash command reference
 
@@ -196,7 +199,7 @@ Top level: `WORKSHEET RANGE COPY MOVE FILE PRINT GRAPH DATA SYSTEM ADD-IN`
   COMBINE  COPY | ADD | SUBTRACT  (file, range-in-file, dest cell)
   XTRACT (file, range, WK1|DIF|TEXT) | ERASE (file, YES/NO) | LIST (pattern)
   IMPORT  DIF | TEXT | NUMBERS (file, anchor cell)
-  DIRECTORY (path)
+  DIRECTORY (path) | QUIT (exit the program)
 /PRINT
   PRINTER (device or |command, range) | FILE (file, range) | RANGE (range, PRINTER|FILE)
   LINES-PAGE (n) | MARGINS (l r t b) | BORDERS (YES/NO) | HEADER (text)

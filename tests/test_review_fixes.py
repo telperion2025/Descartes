@@ -2,7 +2,7 @@
 
 import pytest
 
-from conftest import FakeWindow, char, press, screen_text, type_text
+from conftest import FakeWindow, char, draw, press, screen_text, type_text
 from descartes import persist
 from descartes.data_cmd import frequency
 from descartes.engine import Engine
@@ -122,3 +122,45 @@ class TestFrequencyHorizontal:
         assert ws.value_at(2, 1) == 2.0   # row below the bin row
         assert ws.value_at(3, 1) == 2.0
         assert ws.value_at(4, 1) == 0.0
+
+
+class TestFileQuit:
+    def test_file_quit_exits(self, make_app):
+        app, win = make_app()
+        char(app, "/")
+        for _ in range(4):
+            press(app, "RIGHT")      # FILE
+        press(app, "ENTER")
+        char(app, "q")               # QUIT
+        assert app.running is False
+
+
+class TestColorScheme:
+    def test_pairs_match_lotus_look(self, make_app):
+        import curses
+        app, win = make_app()
+        a = app.screen.attrs
+        # pair 1 white/black worksheet bg, 2 white/blue menu bar, 7 black/white cursor
+        assert curses._pairs[1] == (curses.COLOR_WHITE, curses.COLOR_BLACK)
+        assert curses._pairs[2] == (curses.COLOR_WHITE, curses.COLOR_BLUE)
+        assert curses._pairs[7] == (curses.COLOR_BLACK, curses.COLOR_WHITE)
+        assert curses._pairs[8] == (curses.COLOR_BLACK, curses.COLOR_CYAN)
+        assert a[1] == curses.color_pair(1)
+        assert a[7] & curses.A_BOLD  # cursor cell bold reverse
+
+    def test_cursor_cell_reverse_video_attr(self, make_app):
+        import curses
+        app, win = make_app()
+        type_text(app, "5")
+        press(app, "ENTER")
+        press(app, "UP")   # cursor back on A1
+        draw(app)
+        # A1 cell text at row 4, x=7..15 must carry the cursor attr (pair 7)
+        attr = win.attrs[4][8]
+        assert attr == app.screen.a(7), attr
+        # worksheet background elsewhere is pair 1
+        assert win.attrs[4][20] == app.screen.a(1)
+        # control panel row is pair 8 (cyan panel)
+        assert win.attrs[1][0] == app.screen.a(8)
+        # READY menu bar is the blue pair 2
+        assert win.attrs[0][0] == app.screen.a(2)

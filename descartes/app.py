@@ -211,6 +211,7 @@ class App:
             "f_import_text": lambda a: self.cmd_import(a[0], parse_address(a[1]), "text"),
             "f_import_numbers": lambda a: self.cmd_import(a[0], parse_address(a[1]), "numbers"),
             "f_directory": lambda a: self.cmd_directory(a[0]),
+            "f_quit": lambda a: self.quit(),
             "p_printer": lambda a: self.cmd_print(a[1], dest=a[0]),
             "p_file": lambda a: self.cmd_print(a[1], dest="file:" + a[0]),
             "p_range": lambda a: self.cmd_print(a[0], dest="printer" if a[1].upper() == "PRINTER" else "file:print.txt"),

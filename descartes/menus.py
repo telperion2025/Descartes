@@ -147,6 +147,7 @@ MENU_TREE = [
                                                              {"text": "Place at:", "kind": "cell"}]),
         ]),
         _m("DIRECTORY", action="f_directory", prompt=[{"text": "Directory:", "kind": "text"}]),
+        _m("QUIT", action="f_quit"),
     ]),
     _m("PRINT", [
         _m("PRINTER", action="p_printer", prompt=[{"text": "Print to (device or |command):", "kind": "text"},
