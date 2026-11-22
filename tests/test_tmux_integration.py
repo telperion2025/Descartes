@@ -26,8 +26,10 @@ def _run(*args, **kw):
 @pytest.fixture
 def tmux_session():
     subprocess.run(["tmux", "kill-session", "-t", SESS], capture_output=True)
+    # keep the pane alive after the app exits so we can capture its exit
+    # status and any traceback for diagnosis
     r = _run("new-session", "-d", "-x", "80", "-y", "25", "-s", SESS,
-             f"cd {REPO} && python3 -m descartes")
+             f"cd {REPO} && python3 -m descartes; echo \"EXIT=$?\"; sleep 120")
     assert r.returncode == 0, r.stderr
     _run("set-option", "-t", SESS, "mouse", "on")
     _run("set-window-option", "-t", SESS, "window-size", "manual")
