@@ -30,6 +30,8 @@ def tmux_session():
              f"cd {REPO} && python3 -m descartes")
     assert r.returncode == 0, r.stderr
     _run("set-option", "-t", SESS, "mouse", "on")
+    _run("set-window-option", "-t", SESS, "window-size", "manual")
+    _run("resize-window", "-t", SESS, "-x", "80", "-y", "25")
     # wait until the app is up and rendering (curses uses the alternate screen,
     # so poll both the main and the alternate pane captures)
     deadline = time.time() + 15
@@ -39,7 +41,11 @@ def tmux_session():
         if "READY" in out:
             break
         time.sleep(0.3)
-    assert "READY" in out, f"app did not start in tmux; pane shows: {out!r}"
+    if "READY" not in out:
+        info = _run("list-panes", "-t", SESS, "-F",
+                    "#{pane_width}x#{pane_height} dead=#{pane_dead} cmd=#{pane_current_command}").stdout
+        sess = _run("list-sessions").stdout
+        raise AssertionError(f"app did not start in tmux; pane={out!r} panes={info!r} sessions={sess!r}")
     yield SESS
     subprocess.run(["tmux", "kill-session", "-t", SESS], capture_output=True)
 
