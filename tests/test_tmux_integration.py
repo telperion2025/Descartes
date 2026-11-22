@@ -27,13 +27,14 @@ def _run(*args, **kw):
 def tmux_session():
     subprocess.run(["tmux", "kill-session", "-t", SESS], capture_output=True)
     # keep the pane alive after the app exits so we can capture its exit
-    # status and any traceback for diagnosis
-    r = _run("new-session", "-d", "-x", "80", "-y", "25", "-s", SESS,
+    # status and any traceback for diagnosis. The tmux status line occupies one
+    # row of the window, so the window must be 80x26 for the pane to be 80x25.
+    r = _run("new-session", "-d", "-x", "80", "-y", "26", "-s", SESS,
              f"cd {REPO} && python3 -m descartes; echo \"EXIT=$?\"; sleep 120")
     assert r.returncode == 0, r.stderr
     _run("set-option", "-t", SESS, "mouse", "on")
     _run("set-window-option", "-t", SESS, "window-size", "manual")
-    _run("resize-window", "-t", SESS, "-x", "80", "-y", "25")
+    _run("resize-window", "-t", SESS, "-x", "80", "-y", "26")
     # wait until the app is up and rendering (curses uses the alternate screen,
     # so poll both the main and the alternate pane captures)
     deadline = time.time() + 15
