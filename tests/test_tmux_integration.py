@@ -30,13 +30,28 @@ def tmux_session():
              f"cd {REPO} && python3 -m descartes")
     assert r.returncode == 0, r.stderr
     _run("set-option", "-t", SESS, "mouse", "on")
-    time.sleep(1.5)
+    # wait until the app is up and rendering (curses uses the alternate screen,
+    # so poll both the main and the alternate pane captures)
+    deadline = time.time() + 15
+    out = ""
+    while time.time() < deadline:
+        out = _pane(SESS)
+        if "READY" in out:
+            break
+        time.sleep(0.3)
+    assert "READY" in out, f"app did not start in tmux; pane shows: {out!r}"
     yield SESS
     subprocess.run(["tmux", "kill-session", "-t", SESS], capture_output=True)
 
 
 def _pane(sess):
-    return _run("capture-pane", "-p", "-t", sess).stdout
+    """Pane text: curses draws on the alternate screen, so prefer `-a` when the
+    main capture is blank."""
+    main = _run("capture-pane", "-p", "-t", sess).stdout
+    if main.strip():
+        return main
+    alt = _run("capture-pane", "-a", "-p", "-t", sess).stdout
+    return alt or main
 
 
 def _keys(sess, *keys):
