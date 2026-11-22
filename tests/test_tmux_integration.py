@@ -29,8 +29,10 @@ def tmux_session():
     # keep the pane alive after the app exits so we can capture its exit
     # status and any traceback for diagnosis. The tmux status line occupies one
     # row of the window, so the window must be 80x26 for the pane to be 80x25.
+    # LINES/COLUMNS are set explicitly because ncurses' use_env() prefers them
+    # over the pty ioctl, and the runner environment may carry stale values
     r = _run("new-session", "-d", "-x", "80", "-y", "26", "-s", SESS,
-             f"cd {REPO} && python3 -m descartes; echo \"EXIT=$?\"; sleep 120")
+             f"cd {REPO} && LINES=25 COLUMNS=80 python3 -m descartes; echo \"EXIT=$?\"; sleep 120")
     assert r.returncode == 0, r.stderr
     _run("set-option", "-t", SESS, "mouse", "on")
     _run("set-window-option", "-t", SESS, "window-size", "manual")
