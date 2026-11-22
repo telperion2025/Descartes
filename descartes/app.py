@@ -1312,8 +1312,8 @@ class App:
         asc = a[1].upper().startswith("Y")
         keys = self.sort_state["keys"]
         while len(keys) <= slot:
-            keys.append((0, True))
-        keys[slot] = (c, asc)
+            keys.append((0, 0, True))
+        keys[slot] = (c, r, asc)
         self.sort_state["keys"] = keys
         self.message_msg(f"Sort key {slot + 1}: {a[0]} {'asc' if asc else 'desc'}")
 
@@ -1327,9 +1327,11 @@ class App:
             self.error_msg("Set a key first")
             return
         c1 = rng[0][0]
-        keycols = [(c - c1, asc) for (c, asc) in keys]
+        keycols = [(c - c1, asc) for (c, _r, asc) in keys]
         data_cmd.sort_range(self.sheet, self.engine, rng, keycols)
-        self.message_msg("Sorted")
+        desc = ", ".join(f"{format_address(c, r)} {'asc' if asc else 'desc'}"
+                         for (c, r, asc) in keys)
+        self.message_msg(f"Sorted {format_range(*rng)} by {desc}")
 
     def cmd_query(self, action):
         st = self.query_state

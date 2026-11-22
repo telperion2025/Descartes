@@ -164,3 +164,94 @@ class TestColorScheme:
         assert win.attrs[1][0] == app.screen.a(8)
         # READY menu bar is the blue pair 2
         assert win.attrs[0][0] == app.screen.a(2)
+
+
+class TestOverlayBox:
+    def test_system_overlay_bordered_opaque_and_vanishes(self, make_app):
+        from descartes.screen import P_MENU, P_PANEL
+        app, win = make_app()
+        app.system_lines = ["alpha", "beta", "gamma"]
+        app.system_scroll = 0
+        app.mode = "SYSTEM"
+        draw(app)
+        rows = win.text()
+        top = next(i for i, r in enumerate(rows) if "+" in r and "SYSTEM" in r)
+        left = rows[top].index("+")
+        right = rows[top].rindex("+")
+        assert right > left + 2
+        assert win.attrs[top][left] == app.screen.a(P_MENU)
+        assert win.attrs[top][right] == app.screen.a(P_MENU)
+        body = rows[top + 1]
+        assert body[left] == "|" and body[right] == "|"
+        assert win.attrs[top + 1][left] == app.screen.a(P_MENU)
+        x = body.index("alpha")
+        assert win.attrs[top + 1][x] == app.screen.a(P_PANEL)
+        assert all(win.attrs[top + 1][xx] == app.screen.a(P_PANEL)
+                   for xx in range(left + 1, right))
+        char(app, "x")
+        assert app.mode == "READY"
+
+    def test_help_overlay_bordered_opaque_and_vanishes(self, make_app):
+        from descartes.screen import P_MENU, P_PANEL
+        app, win = make_app()
+        press(app, "F1")
+        assert app.mode == "HELP"
+        draw(app)
+        rows = win.text()
+        assert "F1  this help screen" in win.snapshot()
+        top = next(i for i, r in enumerate(rows) if "+" in r and "HELP" in r)
+        left = rows[top].index("+")
+        assert win.attrs[top][left] == app.screen.a(P_MENU)
+        line_y = next(i for i, r in enumerate(rows) if "F1  this help screen" in r)
+        x = rows[line_y].index("F1  this help screen")
+        assert win.attrs[line_y][x] == app.screen.a(P_PANEL)
+        press(app, "ENTER")
+        assert app.mode == "READY"
+
+
+class TestFullBackgroundPaint:
+    def test_every_row_painted_on_taller_window(self, make_app):
+        from descartes.screen import P_BG
+        app, win = make_app(h=30, w=80)
+        draw(app)
+        bg = app.screen.a(P_BG)
+        for y in range(30):
+            unpainted = [x for x in range(80) if win.grid[y][x] == " " and win.attrs[y][x] == 0]
+            assert not unpainted, f"row {y} has unpainted cells at {unpainted[:5]}"
+        assert win.attrs[29][0] == bg
+        assert win.attrs[28][79] == bg
+
+    def test_message_row_fully_painted(self, make_app):
+        from descartes.screen import ROW_MESSAGE, P_BG
+        app, win = make_app()
+        app.message = "hi"
+        draw(app)
+        bg = app.screen.a(P_BG)
+        assert win.attrs[ROW_MESSAGE][0] == bg
+        assert win.attrs[ROW_MESSAGE][79] == bg
+        assert win.text()[ROW_MESSAGE][:2] == "hi"
+
+
+class TestSortFeedback:
+    def test_descending_sort_via_app_and_message(self, make_app):
+        app, win = make_app()
+        for r, v in enumerate((1, 3, 5, 7, 9)):
+            app.sheet.set_entry(0, r, str(v))
+        app.engine.recalc(force=True)
+        app.sort_state.update(range=split_range("A1..A5"))
+        app._set_sort_key(0, ("A1", "NO"))
+        app.cmd_sort_go()
+        assert [app.sheet.value_at(0, r) for r in range(5)] == [9.0, 7.0, 5.0, 3.0, 1.0]
+        assert "desc" in app.message
+        assert "A1..A5" in app.message and "A1" in app.message
+
+    def test_ascending_sort_message(self, make_app):
+        app, win = make_app()
+        for r, v in enumerate((9, 7, 5, 3, 1)):
+            app.sheet.set_entry(0, r, str(v))
+        app.engine.recalc(force=True)
+        app.sort_state.update(range=split_range("A1..A5"))
+        app._set_sort_key(0, ("A1", "YES"))
+        app.cmd_sort_go()
+        assert [app.sheet.value_at(0, r) for r in range(5)] == [1.0, 3.0, 5.0, 7.0, 9.0]
+        assert "asc" in app.message

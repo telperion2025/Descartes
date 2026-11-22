@@ -159,6 +159,10 @@ class Screen:
 
     def draw(self, app):
         self.clear()
+        h, w = self.size()
+        bg_fill = " " * w
+        for y in range(h):
+            self.put(y, 0, bg_fill, self.a(P_BG))
         if app.mode == "MENU":
             self.draw_menubar(app, active=True)
         else:
@@ -346,6 +350,7 @@ class Screen:
 
     def draw_message(self, app):
         w = self.size()[1]
+        self.put(ROW_MESSAGE, 0, " " * w, self.a(P_BG))
         self.put(ROW_MESSAGE, 0, (app.message or "")[:w], self.a(P_BG))
         err = app.error or ""
         self.put(ROW_ERROR, 0, " " * w, self.a(P_BG))
@@ -387,24 +392,39 @@ class Screen:
                 break
             self.put(ROW_GRID0 + i, 0, ln[:w], self.a(P_BG))
 
+    def overlay_box(self, title, lines):
+        """Centered, bordered, opaque window (cyan panel on black, blue border)."""
+        h, w = self.size()
+        maxw = max((len(ln) for ln in lines), default=10)
+        bw = min(w - 4, max(maxw, len(title) if title else 0) + 4, 70)
+        bh = min(h - 4, len(lines) + 4)
+        if bh < 3 or bw < 8:
+            bw, bh = max(8, bw), max(3, bh)
+        x0 = (w - bw) // 2
+        y0 = (h - bh) // 2
+        for y in range(y0, min(h, y0 + bh)):
+            self.put(y, x0, " " * bw, self.a(P_PANEL))
+        self.box(y0, x0, bh, bw, self.a(P_MENU))
+        if title:
+            self.put(y0, x0 + 1, (" " + title + " ")[: bw - 2], self.a(P_MENU))
+        for i, ln in enumerate(lines):
+            yy = y0 + 1 + i
+            if yy >= y0 + bh - 1:
+                break
+            self.put(yy, x0 + 2, ln[: bw - 4], self.a(P_PANEL))
+
     def draw_system_view(self, app):
         h, w = self.size()
         self.put(ROW_MENUBAR, 0, " SYSTEM - any key returns ".ljust(w), self.a(P_MENU))
         lines = app.system_lines or []
         start = app.system_scroll
-        for i in range(ROW_GRID0, ROW_GRID1 + 1):
-            idx = start + (i - ROW_GRID0)
-            if 0 <= idx < len(lines):
-                self.put(i, 0, lines[idx][:w], self.a(P_BG))
+        self.overlay_box("SYSTEM", lines[start:start + 18])
 
     def draw_help(self, app):
         h, w = self.size()
         self.put(ROW_MENUBAR, 0, " HELP - any key returns ".ljust(w), self.a(P_MENU))
         from .app import HELP_TEXT
-        for i, ln in enumerate(HELP_TEXT):
-            if ROW_GRID0 + i > ROW_GRID1:
-                break
-            self.put(ROW_GRID0 + i, 0, ln[:w], self.a(P_BG))
+        self.overlay_box("HELP", HELP_TEXT)
 
 
 def _in_range(rng, c, r):
