@@ -358,7 +358,7 @@ class App:
             "f_quit": lambda a: self.quit(),
             "p_printer": lambda a: self.cmd_print(a[1], dest=a[0]),
             "p_file": lambda a: self.cmd_print(a[1], dest="file:" + a[0]),
-            "p_range": lambda a: self.cmd_print(a[0], dest="printer" if a[1].upper() == "PRINTER" else "file:print.txt"),
+            "p_range": lambda a: self.cmd_print_range(a[0], a[1]),
             "p_linespage": lambda a: self.print_settings.update(lines_page=int(float(a[0]))),
             "p_margins": lambda a: self.print_settings.update(margins=(int(float(a[0])), int(float(a[1])), int(float(a[2])), int(float(a[3])))),
             "p_borders": lambda a: self.print_settings.update(borders=a[0].upper().startswith("Y")),
@@ -377,8 +377,9 @@ class App:
             "g_opt_format": lambda a: (self.graph.options.update(format=a[0]),
                                        self.message_msg("Graph format: " + a[0])),
             "g_opt_titles": lambda a: setattr(self.graph, "title", a[0]),
-            "g_opt_grid": lambda a: None,
-            "g_opt_scale": lambda a: self.message_msg("Auto scale"),
+            "g_opt_grid": lambda a: self.cmd_graph_grid(),
+            "g_opt_scale": lambda a: (self.graph.options.update(scale="auto"),
+                                       self.message_msg("Graph scale: auto")),
             "d_fill": lambda a: self.cmd_fill(a),
             "d_table1": lambda a: self.cmd_table1(split_range(a[0]), parse_address(a[1])),
             "d_table2": lambda a: self.cmd_table2(split_range(a[0]), parse_address(a[1]), parse_address(a[2])),
@@ -1218,12 +1219,24 @@ class App:
                 if isinstance(lab, str) and lab:
                     self.names[lab.upper()] = {"sheet": self.sheet.name,
                                                 "range": ((c1 + 1, r), (c2, r))}
+        elif pos == "LEFT":
+            for r in range(r1, r2 + 1):
+                lab = self.sheet.value_at(c2, r)
+                if isinstance(lab, str) and lab:
+                    self.names[lab.upper()] = {"sheet": self.sheet.name,
+                                                "range": ((c1, r), (c2 - 1, r))}
         elif pos == "TOP":
             for c in range(c1, c2 + 1):
                 lab = self.sheet.value_at(c, r1)
                 if isinstance(lab, str) and lab:
                     self.names[lab.upper()] = {"sheet": self.sheet.name,
                                                 "range": ((c, r1 + 1), (c, r2))}
+        elif pos == "BOTTOM":
+            for c in range(c1, c2 + 1):
+                lab = self.sheet.value_at(c, r2)
+                if isinstance(lab, str) and lab:
+                    self.names[lab.upper()] = {"sheet": self.sheet.name,
+                                                "range": ((c, r1), (c, r2 - 1))}
         self.message_msg(f"Names created ({pos})")
 
     def cmd_transpose(self, src, dst):
@@ -1638,6 +1651,20 @@ class App:
     # ------------------------------------------------------------------
     # graph
     # ------------------------------------------------------------------
+
+    def cmd_graph_grid(self):
+        on = not self.graph.options.get("grid", True)
+        self.graph.options["grid"] = on
+        self.message_msg("Graph grid: " + ("on" if on else "off"))
+
+    def cmd_print_range(self, range_text, dest):
+        d = (dest or "").strip()
+        if not d or d.upper() == "PRINTER":
+            self.cmd_print(range_text, dest="printer")
+        elif d.startswith("|"):
+            self.cmd_print(range_text, dest=d)
+        else:
+            self.cmd_print(range_text, dest="file:" + d)
 
     def set_graph_type(self, t):
         self.graph.type = t

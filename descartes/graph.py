@@ -136,13 +136,20 @@ def _render_cartesian(graph, sheet, width, height, utf8):
     def y_of(v):
         return int(round((hi - v) / (hi - lo) * (plot_h - 1)))
 
-    # gridlines (horizontal)
-    for t in ticks:
-        y = y_of(t)
-        if 0 <= y < plot_h:
-            for x in range(plot_w):
-                if grid[y][x] == " ":
-                    grid[y][x] = "-"
+    # gridlines (horizontal + vertical), toggleable via /GRAPH OPTIONS GRID
+    if graph.options.get("grid", True):
+        for t in ticks:
+            y = y_of(t)
+            if 0 <= y < plot_h:
+                for x in range(plot_w):
+                    if grid[y][x] == " ":
+                        grid[y][x] = "-"
+        if n > 1:
+            for i in range(n):
+                x = int(i * (plot_w - 1) / (n - 1))
+                for y in range(plot_h):
+                    if grid[y][x] == " ":
+                        grid[y][x] = "|"
 
     if graph.type == "STACKED-BAR":
         _draw_stacked_bars(grid, series, n, plot_w, plot_h, lo, hi, utf8)

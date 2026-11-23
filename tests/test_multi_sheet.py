@@ -400,3 +400,57 @@ class TestBacksolve:
         from descartes.menus import MENU_TREE
         rng = next(m for m in MENU_TREE if m.label == "RANGE")
         assert any(m.label == "BACKSOLVE" for m in rng.children)
+
+
+class TestGraphGridAndPrintRange:
+    def _bar_graph(self, app):
+        from descartes.graph import GraphDef
+        app.graph = GraphDef("BAR", series=[{"name": "S", "range": ((0, 0), (0, 2))}])
+        app.sheet.set_entry(0, 0, "1")
+        app.sheet.set_entry(0, 1, "3")
+        app.sheet.set_entry(0, 2, "2")
+
+    def test_grid_toggle(self, make_app):
+        from descartes import graph as g
+        app, win = make_app()
+        self._bar_graph(app)
+        with_grid = g.render(app.graph, app.sheet, 60, 18)
+        app._actions["g_opt_grid"]([])
+        assert app.graph.options["grid"] is False
+        without = g.render(app.graph, app.sheet, 60, 18)
+        dashes_with = sum(ln.count("-") for ln in with_grid)
+        dashes_without = sum(ln.count("-") for ln in without)
+        assert dashes_with > dashes_without > 0   # axis line stays, gridlines gone
+        app._actions["g_opt_grid"]([])
+        assert g.render(app.graph, app.sheet, 60, 18) == with_grid
+
+    def test_print_range_to_named_file(self, make_app, tmp_path):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "42")
+        out = str(tmp_path / "report.txt")
+        app._actions["p_range"](["A1", out])
+        assert "42" in open(out).read()
+
+    def test_print_range_printer_default(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "7")
+        app._actions["p_range"](["A1", "PRINTER"])
+        assert "Sent to printer" in app.message
+
+
+class TestNameLabelsAllPositions:
+    def test_left_and_bottom(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "10")
+        app.sheet.set_entry(1, 0, "20")
+        app.sheet.set_entry(2, 0, "ROW1")     # rightmost label, row 0
+        app.sheet.set_entry(0, 1, "30")
+        app.sheet.set_entry(1, 1, "40")
+        app.sheet.set_entry(2, 1, "ROW2")
+        app.sheet.set_entry(0, 2, "COLA")
+        app.sheet.set_entry(1, 2, "COLB")
+        app.cmd_name_labels(((0, 0), (2, 2)), "LEFT")
+        assert app.names["ROW1"]["range"] == ((0, 0), (1, 0))
+        app.cmd_name_labels(((0, 0), (2, 2)), "BOTTOM")
+        assert app.names["COLA"]["range"] == ((0, 0), (0, 1))
+        assert app.names["COLB"]["range"] == ((1, 0), (1, 1))

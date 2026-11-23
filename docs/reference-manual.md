@@ -218,7 +218,8 @@ becomes `@ERR()` (`engine.adjust_refs`).
   ERASE (range) | JUSTIFY (range; rotates each row one cell right, rightmost wraps
         to the leftmost column, formula refs shifted) | LABEL (range, LEFT/CENTER/RIGHT)
   NAME  CREATE (name, range; range may be sheet-qualified `B!A1..B2` or 3-D `A:C!A1..B2`)
-        | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM) | RESET | TABLE
+        | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM — label taken from the
+          named edge, range is the rest of that row/column) | RESET | TABLE
   PROTECT | UNPROTECT (range) | INPUT (range)
   TRANSPOSE (range, dest cell) | VALUE (range, dest cell) | SEARCH (range, text)
   BACKSOLVE (target cell, target value, variable cell; secant goal-seek on the
@@ -236,12 +237,14 @@ becomes `@ERR()` (`engine.adjust_refs`).
   IMPORT  DIF | TEXT | NUMBERS (file, anchor cell)
   DIRECTORY (path) | QUIT (exit the program)
 /PRINT
-  PRINTER (device or |command, range) | FILE (file, range) | RANGE (range, PRINTER|FILE)
+  PRINTER (device or |command, range) | FILE (file, range)
+  RANGE (range, destination: PRINTER, |pipe-command, or a file name)
   LINES-PAGE (n) | MARGINS (l r t b) | BORDERS (YES/NO) | HEADER (text)
 /GRAPH
   TYPE  LINE | BAR | XY | STACKED-BAR | PIE
   X-RANGE (range) | A..F (range, name) | RESET | VIEW | SAVE (name)
-  OPTIONS  LEGEND (text) | TITLES (text) | GRID | SCALE
+  OPTIONS  LEGEND (text) | FORMAT (text) | TITLES (text) | GRID (toggles horizontal
+        and vertical gridlines) | SCALE (auto)
 /DATA
   FILL (range, start, step, stop)
   TABLE  1-VARIABLE (range, input cell) | 2-VARIABLE (range, row cell, col cell)
