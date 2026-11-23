@@ -137,3 +137,74 @@ class TestAltLetterWiring:
         app.handle(KeyEvent("char", ch="k", name="ALT+k"))
         assert app.error.startswith("Macro:")
         assert app.running
+
+
+class TestInputCommands:
+    def test_input_suspends_then_resumes_on_enter(self, make_app):
+        app, win = make_app()
+        app.input_range = ((0, 0), (0, 0))
+        app.sheet.set_entry(3, 0, "{INPUT}{LET B1, 99}")
+        MacroRunner(app).run_cell((3, 0))
+        assert app.macro_wait is not None and app.macro_wait["kind"] == "input"
+        assert app.mode == "EDIT"
+        app.handle(KeyEvent("char", ch="7"))
+        app.handle(KeyEvent("key", name="ENTER"))
+        assert app.macro_wait is None
+        assert app.sheet.value_at(0, 0) == 7.0
+        assert app.sheet.value_at(1, 0) == 99.0
+
+    def test_input_requires_range_input(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(3, 0, "{INPUT}")
+        with pytest.raises(MacroError):
+            MacroRunner(app).run_cell((3, 0))
+
+    def test_getnumber_prompts_and_stores(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(3, 0, '{GETNUMBER "Qty?", B1}{LET C1, 1}')
+        MacroRunner(app).run_cell((3, 0))
+        assert app.macro_wait is not None and app.macro_wait["kind"] == "number"
+        assert app.mode == "DIALOG"
+        app.handle(KeyEvent("char", ch="4"))
+        app.handle(KeyEvent("char", ch="2"))
+        app.handle(KeyEvent("key", name="ENTER"))
+        assert app.macro_wait is None
+        assert app.sheet.value_at(1, 0) == 42.0
+        assert app.sheet.value_at(2, 0) == 1.0
+
+    def test_getlabel_prompts_and_stores_text(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(3, 0, '{GETLABEL "Name?", B1}{LET C1, 2}')
+        MacroRunner(app).run_cell((3, 0))
+        assert app.macro_wait["kind"] == "text"
+        app.handle(KeyEvent("char", ch="h"))
+        app.handle(KeyEvent("char", ch="i"))
+        app.handle(KeyEvent("key", name="ENTER"))
+        assert app.sheet.value_at(1, 0) == "hi"
+        assert app.sheet.value_at(2, 0) == 2.0
+
+    def test_menubranch_feeds_keystrokes(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(4, 0, "'/W")
+        app.sheet.set_entry(3, 0, "{MENUBRANCH E1}")
+        MacroRunner(app).run_cell((3, 0))
+        assert app.mode == "MENU"
+        app.unwind("CANCELED")
+
+    def test_define_creates_range_name(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "1")
+        app.sheet.set_entry(0, 1, "2")
+        app.sheet.set_entry(0, 2, "3")
+        app.sheet.set_entry(3, 0, "{DEFINE TOTAL: A1..A3}{LET B1, @SUM(TOTAL)}")
+        MacroRunner(app).run_cell((3, 0))
+        app._recalc(force=True)
+        assert app.names["TOTAL"]["range"] == ((0, 0), (0, 2))
+        assert app.sheet.value_at(1, 0) == 6.0
+
+    def test_define_3d_name(self, make_app):
+        app, win = make_app()
+        app.cmd_insert_sheet()
+        app.sheet.set_entry(3, 0, "{DEFINE ALL: A:B!A1..A1}")
+        MacroRunner(app).run_cell((3, 0))
+        assert app.names["ALL"].get("sheets") == ["A", "B"]

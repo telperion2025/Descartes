@@ -8,8 +8,11 @@ Tokens: `{COMMAND args}` for commands, `{KEYNAME}` for special keys, and bare
 text between commands is sent to the app as keystrokes (so macros drive the real
 UI: typing `12{ENTER}` enters 12 into the current cell).
 
-Commands: GOTO, LET, BEEP, RECALC, WAIT, SYSTEM, BRANCH, CALL, RETURN, HALT,
-QUIT, IF / ELSE / END, LOOK (no-op). Unknown commands halt with an error.
+Commands: GOTO, LET/PUT, BEEP, RECALC, WAIT, SYSTEM, BRANCH, CALL, RETURN,
+HALT, QUIT, IF / ELSE / END, LOOK (no-op), INPUT (needs /RANGE INPUT),
+GETNUMBER / GETLABEL (prompt + store into a cell), MENUBRANCH (feed a cell's
+text as menu keystrokes), DEFINE (create a range name, 3-D aware). Unknown
+commands halt with an error.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from __future__ import annotations
 import time
 
 from .engine import Ctx, compile_node, parse
-from .grid import parse_address
+from .grid import is_valid_name, parse_address, split_range_any
 from .keys import KeyEvent
 
 KEY_NAMES = {"LEFT", "RIGHT", "UP", "DOWN", "HOME", "ENDKEY", "PGUP", "PGDN",
@@ -26,7 +29,8 @@ KEY_NAMES = {"LEFT", "RIGHT", "UP", "DOWN", "HOME", "ENDKEY", "PGUP", "PGDN",
 KEY_ALIASES = {"ENDKEY": "END"}
 
 COMMANDS = {"GOTO", "LET", "PUT", "BEEP", "RECALC", "WAIT", "SYSTEM", "BRANCH",
-            "CALL", "RETURN", "HALT", "QUIT", "IF", "ELSE", "END", "LOOK"}
+            "CALL", "RETURN", "HALT", "QUIT", "IF", "ELSE", "END", "LOOK",
+            "INPUT", "GETNUMBER", "GETLABEL", "MENUBRANCH", "DEFINE"}
 
 
 class MacroError(Exception):
@@ -131,6 +135,19 @@ class MacroRunner:
         self.max_steps = max_steps
         self.max_depth = max_depth
         self.steps = 0
+        self.stack = []
+        self.suspended = None
+
+    def resume(self):
+        """Continue a macro suspended by {INPUT}/{GETNUMBER}/{GETLABEL}."""
+        if not self.suspended:
+            return
+        toks, pc, fkey = self.suspended
+        self.suspended = None
+        try:
+            self._exec(toks, pc, fkey)
+        except RecursionError:
+            raise MacroError("macro recursion too deep")
 
     def _tick(self):
         self.steps += 1
@@ -142,6 +159,7 @@ class MacroRunner:
         if raw is None or not raw.startswith("{"):
             raise MacroError(f"{key} is not a macro cell")
         self.stack = []
+        self.suspended = None
         try:
             self._exec(tokenize_macro(raw), 0, key)
         except RecursionError:
@@ -150,7 +168,7 @@ class MacroRunner:
     def _exec(self, toks, start, fkey):
         pc = start
         while pc < len(toks):
-            if not getattr(self.app, "running", True):
+            if not getattr(self.app, "running", True) or self.suspended:
                 break
             self._tick()
             t = toks[pc]
@@ -228,6 +246,49 @@ class MacroRunner:
             app.cmd_system(args)
             return pc + 1
         if name == "LOOK":
+            return pc + 1
+        if name == "INPUT":
+            rng = getattr(app, "input_range", None)
+            if rng is None:
+                raise MacroError("{INPUT} requires /RANGE INPUT first")
+            app.move(*rng[0])
+            app.begin_macro_wait("input", "Enter data:", None, self)
+            self.suspended = (toks, pc + 1, fkey)
+            return len(toks)
+        if name in ("GETNUMBER", "GETLABEL"):
+            a = split_args(args)
+            if len(a) != 2:
+                raise MacroError(f"{{{name}}} needs \"prompt\", cell")
+            prompt = a[0].strip()
+            if len(prompt) >= 2 and prompt.startswith('"') and prompt.endswith('"'):
+                prompt = prompt[1:-1]
+            c, r = parse_address(a[1])
+            app.begin_macro_wait("number" if name == "GETNUMBER" else "text",
+                                 prompt, (c, r), self)
+            self.suspended = (toks, pc + 1, fkey)
+            return len(toks)
+        if name == "MENUBRANCH":
+            c, r = parse_address(args)
+            raw = app.sheet.raw_at(c, r)
+            if raw is None:
+                raise MacroError(f"MENUBRANCH target {args} is empty")
+            text = raw[1:] if raw.startswith("'") else raw
+            for ch in text:
+                app.handle(KeyEvent("char", ch=ch))
+            return pc + 1
+        if name == "DEFINE":
+            if ":" not in args:
+                raise MacroError("{DEFINE} needs name:range")
+            nm, rngtxt = args.split(":", 1)
+            nm = nm.strip().upper()
+            if not is_valid_name(nm):
+                raise MacroError(f"bad range name {nm!r}")
+            sheets, c1, c2 = split_range_any(rngtxt)
+            entry = {"sheet": sheets[0] if sheets else app.active, "range": (c1, c2)}
+            if sheets and sheets[0] != sheets[1]:
+                entry["sheets"] = [sheets[0], sheets[1]]
+            app.names[nm] = entry
+            app._rebuild_xdeps()
             return pc + 1
         if name == "CALL":
             if len(self.stack) >= self.max_depth:

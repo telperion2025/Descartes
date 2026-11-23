@@ -159,6 +159,7 @@ class App:
         self._drag_anchor = None
         self._resize_col = None
         self.input_range = None
+        self.macro_wait = None
         self.sort_state = {"range": None, "keys": []}
         self.query_state = {"input": None, "criterion": None, "output": None,
                             "unique": False}
@@ -673,6 +674,8 @@ class App:
         self.entry_pos = 0
         c, r = self.cur
         self.move(c, min(MAX_ROWS - 1, r + 1))
+        if self.macro_wait is not None and self.macro_wait["kind"] == "input":
+            self._resume_macro()
 
     def entry_key(self, name):
         if name == "ENTER":
@@ -785,12 +788,58 @@ class App:
             return False
         if entry.get("sheet") and entry["sheet"] != self.active:
             return False
+        if self.macro_wait is not None:
+            return False
+        runner = _macro.MacroRunner(self)
         try:
-            _macro.MacroRunner(self).run_cell((c1, r1))
+            runner.run_cell((c1, r1))
         except _macro.MacroError as e:
             self.error_msg(f"Macro: {e}")
         self._recalc(force=True)
         return True
+
+    def begin_macro_wait(self, kind, prompt, cell, runner):
+        """A macro hit {INPUT}/{GETNUMBER}/{GETLABEL}: suspend it and collect
+        the user's input through the normal entry machinery."""
+        self.macro_wait = {"kind": kind, "prompt": prompt, "cell": cell,
+                           "runner": runner}
+        if kind == "input":
+            self.message_msg(prompt)
+            self.start_edit()
+        else:
+            self.prompt_chain([{"text": prompt or "...", "kind": kind}],
+                              lambda ans: self._finish_macro_wait(ans))
+
+    def _finish_macro_wait(self, answers):
+        mw = self.macro_wait
+        if mw is None:
+            return
+        text = answers[0] if answers else ""
+        if mw["kind"] == "number":
+            try:
+                raw = _fmt.general_number(float(text.replace("%", "")))
+            except ValueError:
+                raw = "+@ERR()"
+        elif text[:1] in VALUE_START:
+            raw = text
+        else:
+            raw = "'" + text
+        c, r = mw["cell"]
+        self.sheet.set_entry(c, r, raw)
+        self.engine.note_edit((c, r))
+        self._touch(self.active, (c, r))
+        self._resume_macro()
+
+    def _resume_macro(self):
+        mw = self.macro_wait
+        if mw is None:
+            return
+        self.macro_wait = None
+        try:
+            mw["runner"].resume()
+        except _macro.MacroError as e:
+            self.error_msg(f"Macro: {e}")
+        self._recalc(force=True)
 
     def menu_key(self, name):
         if name == "LEFT":
@@ -1150,6 +1199,8 @@ class App:
         self.mode = READY
         self.entry = ""
         self.message_msg(msg)
+        if self.macro_wait is not None:
+            self._resume_macro()
 
     def set_recalc(self, mode, iterations):
         self.sheet.recalc_mode = mode
