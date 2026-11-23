@@ -332,11 +332,8 @@ range), graph definitions, print settings, and window split/titles.
 
 Record stream: `{u16 opcode LE, u16 length LE, payload[length]}`, terminated by EOF
 (0x0001). BOF (0x0000) carries the version word (writer emits 0x0406; readers accept
-0x0404/0x0405/0x0406 and the WK3-style 4-byte `0x0005 0x0806`). Cell records are decoded
-for the WK1/WKS opcode family below (payload = fmt byte, col u16, row u16, ...); WK3/WK4
-files are accepted and their unknown records skipped record-by-record, which decodes the
-first sheet's cell records when they use WK1-family opcodes — other records are ignored
-gracefully (documented limitation). Cell records:
+0x0404/0x0405/0x0406). Cell records are decoded
+for the WK1/WKS opcode family below (payload = fmt byte, col u16, row u16, ...). Cell records:
 
 | opcode | record | payload after col/row |
 | --- | --- | --- |
@@ -358,6 +355,32 @@ unsupported keeps the cached numeric result. Export encodes labels/numbers and f
 The WK1 format byte: bit 7 protected, bits 4-6 type (0 fixed, 1 sci, 2 currency, 3 percent,
 4 comma, 7 special), bits 0-3 decimals or special subtype (2 dd/mm/yy, 3 dd/mm, 4 mm/yy,
 5 text, 6 hidden, 7-10 dates, 11-12 times); 0xFF = default. See `fmt.wk1_byte_to_fmt`.
+
+### 10.2b WK3 (Lotus 1-2-3 Release 3.x binary) — multi-sheet import
+
+Detected by the first BOF (0x0000) version word >= 0x1000 with subtype 0x0004.
+A WK3 file is a sequence of sheet blocks, each `BOF .. EOF` (0x0001); every cell
+record carries a tab index (`col u16, row u16, tab u16`) so cells land on the right
+sheet. Records handled: 0x0007 COLUMNWIDTH (u8 tab, u8 window2, u16, then
+col/width byte pairs), 0x0009 USERRANGE (u16 type, 16-byte name, 4x u16 range, and
+for 3-D names 2 extra u16 tab indices), 0x0014 ERR, 0x0015 NA, 0x0016 LABEL (addr,
+prefix char, NUL-terminated CP437 string), 0x0017 NUMBER (addr, f64), 0x0018
+SMALLNUM (addr, i16 Lotus compressed float), 0x0019 FORMULA (addr, f64 cached,
+u16 token length, WK3 RPN), 0x001B subtype 14000 = sheet name (u16 tab +
+NUL-terminated name; sheet names are uppercased to match formula refs).
+Password-protected files (0x0002) are rejected with an error.
+
+WK3 formula RPN opcodes: 0x00 10-byte x87 extended float, 0x01 16-bit compressed
+number, 0x02 cell ref (relbits u8, row u16, tab u8, col u8), 0x03 range ref
+(relbits + 2x (row,tab,col)), 0x04/0x05 named-range refs (NUL-terminated name),
+0x06-0x08 error refs, 0x09 add-in function (unsupported -> cached value),
+0x0A end, 0x0B braces, 0x0C i16 const, 0x0D string, 0x0E nop, 0x0F-0x1E
+operators (the WK1 operator set shifted by +7), 0x1F+ the same function opcodes
+as WK1. Refs whose tab differs from the formula's sheet are emitted sheet-qualified
+(`B!A1`, `A:C!A1..B2`). Anything unparseable falls back to the cached result.
+WK3 *writing* is not implemented (the native .vg1 is multi-sheet; WK1 export is
+single-sheet by nature and writes the active sheet, with 3-D formulas exported
+as their cached NUMBER values).
 
 ### 10.3 DIF / TEXT / NUMBERS
 
@@ -390,9 +413,13 @@ The acceptance walkthrough of the spec is driven end-to-end in
 
 ## 13. Non-goals
 
-Multi-sheet printing, mouse column-resize handles, color beyond text modes, multi-line
-cells. (Multi-sheet workbooks, 3-D ranges, named ranges in formulas, cross-sheet
-/COPY, /RANGE BACKSOLVE, and `{...}` macros are implemented.)
+Color beyond text modes, multi-line cells, WK3 *writing*, real Lotus .add add-ins
+(`/ADD-IN` reports they are unsupported). Everything else from the earlier gap list
+is implemented: multi-sheet workbooks and WK3 multi-sheet import, 3-D ranges and
+names, cross-sheet /COPY, multi-sheet (3-D) print ranges, Lotus-style implicit
+intersection, 3-D refs narrowed on sheet delete, sort ref remapping, /RANGE
+BACKSOLVE, /RANGE INPUT + interactive macro commands, mouse column-resize, MEM
+indicator, and the `{...}` macro language (incl. FOR/FOREND/FORBREAK loops).
 
 ## 14. Macros (`{...}` command language)
 
@@ -406,7 +433,12 @@ keys (`{LEFT} {RIGHT} {UP} {DOWN} {HOME} {ENDKEY} {PGUP} {PGDN} {INS} {DEL} {BS}
 as keystrokes. Commands: `GOTO cell`, `LET cell,value` (also `PUT`), `BEEP`,
 `RECALC`, `WAIT secs`, `SYSTEM command`, `BRANCH cell`, `CALL cell` / `RETURN`,
 `HALT`, `QUIT` (quits the app), `IF expr` / `ELSE` / `END` (nestable blocks), `LOOK`
-(no-op). Unknown commands halt with a `Macro:` error.
+(no-op), `INPUT` (pauses; the user edits the `/RANGE INPUT` range and presses Enter),
+`GETNUMBER "prompt", cell` / `GETLABEL` (prompt in the control panel, answer stored
+into the cell, macro resumes), `MENUBRANCH cell` (feeds the cell's text as menu
+keystrokes), `DEFINE name:range` (creates a range name, 3-D aware),
+`{FOR counter, start, end[, step]} ... {FOREND}` loops (nestable, `{FORBREAK}` exits).
+Unknown commands halt with a `Macro:` error.
 
 The runner (`MacroRunner`) drives the real UI through `app.handle`, with a step cap
 (10000) and CALL depth cap (16); runaway macros raise `MacroError` instead of hanging.
