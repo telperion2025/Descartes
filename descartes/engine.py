@@ -206,9 +206,12 @@ def tokenize(s: str) -> list[Token]:
 # ---------------------------------------------------------------------------
 
 class _Parser:
+    MAX_DEPTH = 100
+
     def __init__(self, toks):
         self.toks = toks
         self.pos = 0
+        self.depth = 0
 
     def peek(self) -> Token:
         return self.toks[self.pos]
@@ -329,7 +332,11 @@ class _Parser:
             return ("func", t.value, args)
         if t.kind == "LPAREN":
             self.next()
+            self.depth += 1
+            if self.depth > self.MAX_DEPTH:
+                raise FormulaSyntaxError("formula too deeply nested")
             node = self.concat()
+            self.depth -= 1
             self.expect("RPAREN")
             return node
         raise FormulaSyntaxError(f"unexpected {t.text or t.kind!r}")

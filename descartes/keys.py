@@ -296,6 +296,7 @@ class RawReader:
                 escdelay_ms = 25
         self.escdelay = max(1, escdelay_ms) / 1000.0
         self.buf = bytearray()
+        self.eof = False
         self._seqs = sorted(((s.encode("latin-1"), n) for s, n in _RAW_SEQUENCES.items()),
                             key=lambda kv: -len(kv[0]))
         self._prefixes = [s for s, _ in self._seqs] + [b"\x1b[<", b"\x1b[M"]
@@ -348,6 +349,25 @@ class RawReader:
                     return KeyEvent("key", name=name), len(seq)
             if not final and self._is_prefix():
                 return None, 0
+            if b.startswith(b"\x1b["):
+                j = 2
+                while j < len(b) and not (0x40 <= b[j] <= 0x7E):
+                    j += 1
+                if j < len(b):
+                    del buf[:j + 1]
+                    return None, j + 1
+                if final:
+                    del buf[:len(b)]
+                    return None, len(b)
+                return None, 0
+            if b.startswith(b"\x1bO"):
+                if len(b) >= 3:
+                    del buf[:3]
+                    return None, 3
+                if final:
+                    del buf[:len(b)]
+                    return None, len(b)
+                return None, 0
             if len(b) >= 2 and 32 <= b[1] < 127:
                 ch = chr(b[1])
                 del buf[:2]
@@ -390,19 +410,21 @@ class RawReader:
             try:
                 r, _, _ = select.select([self.fd], [], [], timeout)
             except (OSError, ValueError):
+                self.eof = True
                 return None
             if not r:
-                if need_esc:
-                    ev, n = self._parse(final=True)
-                    if ev is not None:
-                        return ev
-                    if n:
-                        continue
-                continue
+                ev, n = self._parse(final=True)
+                if ev is not None:
+                    return ev
+                if n:
+                    continue
+                return None
             try:
                 data = os.read(self.fd, 4096)
             except OSError:
+                self.eof = True
                 return None
             if not data:
+                self.eof = True
                 return None
             self.buf += data

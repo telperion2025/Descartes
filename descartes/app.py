@@ -400,6 +400,8 @@ class App:
         while self.running:
             ev = reader.read_event() if reader is not None else read_event(self.stdscr)
             if ev is None:
+                if reader is not None and reader.eof:
+                    break
                 continue
             try:
                 self.handle(ev)

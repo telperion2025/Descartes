@@ -90,7 +90,8 @@ pure logic and is unit-tested without a terminal (fake-curses harness drives the
   ```
 
 - Parentheses; function calls `@NAME(arg, ...)` (also `@NA` with no parentheses).
-- A leading `+` is the formula indicator, not an operator.
+- A leading `+` is the formula indicator, not an operator. Parenthesization depth is
+  capped (100); deeper nesting is a syntax error, not a crash.
 - Sheet-qualified refs: `B!A1` (single sheet), 3-D ranges `A:C!A1..B2` (sheets A through
   C inclusive; `$` allowed on sheet names, e.g. `$A:$C!A1`). A 3-D range inside a
   function aggregates over all sheets in the span (`@SUM(A:C!A1..B2)`); in scalar
@@ -287,6 +288,8 @@ macOS/BSD for snappy Alt-keys.
   (<=400 ms double/triple), drag, wheel_up, wheel_down, modifiers)`. Set
   `DESCARTES_RAW_INPUT=0` to fall back to the curses `getch` path (`read_event` +
   `MouseParser`). Terminal resizes are detected by polling `os.get_terminal_size`.
+  Unknown/unmatched escape sequences are swallowed whole (never leak into cell entry),
+  and tty EOF ends the input loop cleanly.
 - Behavior table in [user manual §10](user-manual.md#10-mouse).
 - tmux >= 3.2 with `set -g mouse on` passes 1006 through (origin = pane); TERM=screen*
   without mouse support is detected and the app stays keyboard-only; malformed mouse
