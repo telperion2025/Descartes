@@ -268,3 +268,90 @@ class TestRangeNamesInFormulas:
         app2.load_file(path)
         assert app2.names["SPAN"]["sheets"] == ["A", "B"]
         assert app2.names["SPAN"]["range"] == ((0, 0), (1, 1))
+
+
+class TestCrossSheetCopyMove:
+    def test_copy_sheet_qualified_source(self, make_app):
+        app, win = make_app()
+        app.cmd_insert_sheet()                      # B active
+        app.sheet.set_entry(0, 0, "5")
+        app.sheet.set_entry(0, 1, "+A1*2")
+        app._register_all()
+        app._recalc(force=True)
+        app.active = "A"
+        app.cmd_copy(["B!A1..A2", "C1"], move=False)
+        assert app.sheets["A"].value_at(2, 0) == 5.0
+        assert app.sheets["A"].value_at(2, 1) == 10.0
+        assert "C1" in app.sheets["A"].raw_at(2, 1)
+
+    def test_copy_3d_source_to_3d_dest(self, make_app):
+        app, win = make_app()
+        app.sheets["A"].set_entry(0, 0, "1")
+        app.cmd_insert_sheet()                      # B
+        app.sheet.set_entry(0, 0, "2")
+        app.cmd_copy(["A:B!A1..A1", "A:B!C1..C1"], move=False)
+        assert app.sheets["A"].value_at(2, 0) == 1.0
+        assert app.sheets["B"].value_at(2, 0) == 2.0
+
+    def test_copy_3d_source_to_2d_dest_replicates(self, make_app):
+        app, win = make_app()
+        app.sheets["A"].set_entry(0, 0, "1")
+        app.cmd_insert_sheet()                      # B
+        app.sheet.set_entry(0, 0, "2")
+        app.cmd_copy(["A:B!A1..A1", "C1"], move=False)   # 2-D dst: lands on active sheet
+        assert app.sheets["B"].value_at(2, 0) == 2.0
+
+    def test_move_cross_sheet_clears_source(self, make_app):
+        app, win = make_app()
+        app.cmd_insert_sheet()                      # B
+        app.sheet.set_entry(0, 0, "7")
+        app.active = "A"
+        app.cmd_copy(["B!A1", "C1"], move=True)
+        assert app.sheets["B"].cell(0, 0) is None
+        assert app.sheets["A"].value_at(2, 0) == 7.0
+
+    def test_3d_source_2d_dest_single_sheet_ok(self, make_app):
+        app, win = make_app()
+        app.cmd_insert_sheet()
+        app.sheet.set_entry(0, 0, "9")
+        app.active = "A"
+        app.cmd_copy(["B!A1", "C1"], move=False)
+        assert app.sheets["A"].value_at(2, 0) == 9.0
+
+
+class TestRangeJustify:
+    def test_justify_rotates_row_right(self, make_app):
+        app, win = make_app()
+        for c, v in enumerate(("a", "b", "c")):
+            app.sheet.set_entry(c, 0, v)
+        app.cmd_range_justify(((0, 0), (2, 0)))
+        assert [app.sheet.value_at(c, 0) for c in range(3)] == ["c", "a", "b"]
+
+    def test_justify_shifts_formula_refs(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "5")
+        app.sheet.set_entry(1, 0, "+A1*2")
+        app._register_all()
+        app._recalc(force=True)
+        app.cmd_range_justify(((0, 0), (1, 0)))
+        # old B1 (+A1*2) rotated into A1 -> shifted to +B1*2, now pointing at the moved 5
+        assert app.sheet.raw_at(0, 0).startswith("+")
+        assert "B1" in app.sheet.raw_at(0, 0)
+        assert app.sheet.value_at(0, 0) == 10.0
+
+
+class TestGlobalFormat:
+    def test_global_format_applies(self, make_app):
+        from descartes import fmt
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "1234.5")
+        app._actions["wg_format"](["FIXED"])
+        assert app.sheet.global_fmt == {"type": "fixed", "decimals": 2}
+        assert fmt.display(app.sheet.value_at(0, 0), app.sheet.global_fmt) == "1234.50"
+
+    def test_global_format_general_clears(self, make_app):
+        app, win = make_app()
+        app._actions["wg_format"](["PERCENT"])
+        assert app.sheet.global_fmt == {"type": "percent", "decimals": 0}
+        app._actions["wg_format"](["GENERAL"])
+        assert app.sheet.global_fmt is None

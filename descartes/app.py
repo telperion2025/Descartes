@@ -54,6 +54,21 @@ READY, VALUE, LABEL, EDIT, POINT, MENU, DIALOG, ERROR = (
     "READY", "VALUE", "LABEL", "EDIT", "POINT", "MENU", "DIALOG", "ERROR")
 GRAPH, SYSTEM, HELP = "GRAPH", "SYSTEM", "HELP"
 
+_FORMAT_KINDS = {
+    "FIXED": {"type": "fixed", "decimals": 2},
+    "SCIENTIFIC": {"type": "sci", "decimals": 2},
+    "CURRENCY": {"type": "currency", "decimals": 2},
+    "PERCENT": {"type": "percent", "decimals": 0},
+    "COMMA": {"type": "comma", "decimals": 2},
+    "GENERAL": None,
+    "TEXT": {"type": "text"},
+    "DATE": {"type": "date", "style": "dd-mmm-yy"},
+    "TIME": {"type": "time", "style": "hh:mm:ss"},
+    "HIDDEN": {"type": "hidden"},
+}
+_FORMAT_CHOICES = ["FIXED", "SCIENTIFIC", "CURRENCY", "PERCENT", "COMMA", "GENERAL",
+                   "TEXT", "DATE", "TIME", "HIDDEN"]
+
 
 class Prompt:
     """A prompt chain: list of prompt specs; on Enter each answer is validated
@@ -304,7 +319,7 @@ class App:
             "wg_col_prefix": lambda a: (setattr(self.sheet, "col_prefix", a[0]),
                                         self.message_msg("Column prefix: " + a[0])),
             "wg_zero_suppress": lambda a: setattr(self.sheet, "zero_suppress", not self.sheet.zero_suppress),
-            "wg_format": lambda a: self.message_msg("Global format set"),
+            "wg_format": lambda a: self.cmd_global_format(a[0]),
             "wg_recalc_auto": lambda a: self.set_recalc("auto", 0),
             "wg_recalc_manual": lambda a: self.set_recalc("manual", 0),
             "wg_recalc_iteration": lambda a: self.prompt_chain(
@@ -319,7 +334,7 @@ class App:
             "r_name_reset": lambda a: self.names.clear() or self.message_msg("Names reset"),
             "r_name_table": lambda a: self.message_msg(f"{len(self.names)} names"),
             "r_name_labels": lambda a: self.cmd_name_labels(split_range(a[0]), a[1].upper()),
-            "r_justify": lambda a: self.message_msg("Range justified"),
+            "r_justify": lambda a: self.cmd_range_justify(split_range(a[0])),
             "r_label": lambda a: self.cmd_range_label(split_range(a[0]), a[1].upper()),
             "r_protect": lambda a: self.cmd_range_protect(split_range(a[0]), True),
             "r_unprotect": lambda a: self.cmd_range_protect(split_range(a[0]), False),
@@ -1143,19 +1158,7 @@ class App:
         self.message_msg(f"Erased {format_range(*rng)}")
 
     def cmd_range_format(self, rng, choice):
-        kinds = {
-            "FIXED": {"type": "fixed", "decimals": 2},
-            "SCIENTIFIC": {"type": "sci", "decimals": 2},
-            "CURRENCY": {"type": "currency", "decimals": 2},
-            "PERCENT": {"type": "percent", "decimals": 0},
-            "COMMA": {"type": "comma", "decimals": 2},
-            "GENERAL": None,
-            "TEXT": {"type": "text"},
-            "DATE": {"type": "date", "style": "dd-mmm-yy"},
-            "TIME": {"type": "time", "style": "hh:mm:ss"},
-            "HIDDEN": {"type": "hidden"},
-        }
-        fmt = kinds.get(choice.upper())
+        fmt = _FORMAT_KINDS.get(choice.upper())
         for c, r in range_cells(*rng):
             cell = self.sheet.get_or_make(c, r)
             cell.fmt = fmt
@@ -1273,49 +1276,104 @@ class App:
     # ------------------------------------------------------------------
 
     def cmd_copy(self, answers, move):
-        src = split_range(answers[0])
-        dst = split_range(answers[1]) if len(answers) > 1 else (self.cur, self.cur)
+        sheets_s, sc1, sc2 = split_range_any(answers[0])
+        src = (sc1, sc2)
+        if len(answers) > 1:
+            sheets_d, dc1, dc2 = split_range_any(answers[1])
+            dst = (dc1, dc2)
+        else:
+            sheets_d = None
+            dst = (self.cur, self.cur)
+        src_sheets = self.span(*sheets_s) if sheets_s else [self.active]
+        if sheets_d:
+            dst_sheets = self.span(*sheets_d)
+            if len(src_sheets) > 1 and len(dst_sheets) != len(src_sheets):
+                self.error_msg("3-D source needs a 3-D destination of the same size")
+                return
+        else:
+            dst_sheets = [self.active] * len(src_sheets)
         (c1, r1), (c2, r2) = src
         (dc1, dr1), (dc2, dr2) = dst
         sw, sh = c2 - c1 + 1, r2 - r1 + 1
         dw, dh = dc2 - dc1 + 1, dr2 - dr1 + 1
         tiles_x = max(1, dw // sw)
         tiles_y = max(1, dh // sh)
-        snapshot = None
-        if move:
-            snapshot = {k: self.sheet.cell(*k) for k in range_cells(*src)}
-            for c, r in range_cells(*src):
+        for si, sname in enumerate(src_sheets):
+            dname = dst_sheets[min(si, len(dst_sheets) - 1)]
+            sheet = self.sheets[sname]
+            dsheet = self.sheets[dname]
+            snapshot = None
+            if move:
+                snapshot = {k: sheet.cell(*k) for k in range_cells(*src)}
+                for c, r in range_cells(*src):
+                    old = sheet.cell(c, r)
+                    if old is not None and old.kind == FORMULA:
+                        self.engines[sname].unregister((c, r))
+                    sheet.clear_cell(c, r)
+            for ty in range(tiles_y):
+                for tx in range(tiles_x):
+                    ox = dc1 + tx * sw - c1
+                    oy = dr1 + ty * sh - r1
+                    for c, r in range_cells(*src):
+                        cell = snapshot.get((c, r)) if move else sheet.cell(c, r)
+                        nc, nr = c + ox, r + oy
+                        if not (0 <= nc < MAX_COLS and 0 <= nr < MAX_ROWS):
+                            continue
+                        old = dsheet.cell(nc, nr)
+                        if old is not None and old.kind == FORMULA:
+                            self.engines[dname].unregister((nc, nr))
+                        if cell is not None:
+                            new = cell.copy()
+                            if new.kind == FORMULA:
+                                try:
+                                    new.raw = shift_raw(new.raw, ox, oy)
+                                except FormulaSyntaxError:
+                                    pass
+                            dsheet.cells[(nc, nr)] = new
+                            self.engines[dname].note_edit((nc, nr))
+                        else:
+                            # copying a blank erases the destination (as in 1-2-3)
+                            dsheet.clear_cell(nc, nr)
+        self._register_all()
+        self._recalc(force=True)
+        label = answers[0].strip().upper()
+        if len(answers) > 1:
+            label += " to " + answers[1].strip().upper()
+        self.message_msg(("Moved " if move else "Copied ") + label)
+
+    def cmd_range_justify(self, rng):
+        """/RANGE JUSTIFY: rotate each row of the range one cell to the right
+        (the rightmost cell wraps to the leftmost), as in 1-2-3."""
+        (c1, r1), (c2, r2) = normalize_corners(*rng)
+        for r in range(r1, r2 + 1):
+            row = [self.sheet.cells.get((c, r)) for c in range(c1, c2 + 1)]
+            if not any(row):
+                continue
+            rotated = [row[-1]] + row[:-1]
+            for i, c in enumerate(range(c1, c2 + 1)):
+                cell = rotated[i]
                 old = self.sheet.cell(c, r)
                 if old is not None and old.kind == FORMULA:
                     self.engine.unregister((c, r))
-                self.sheet.clear_cell(c, r)
-        for ty in range(tiles_y):
-            for tx in range(tiles_x):
-                ox = dc1 + tx * sw - c1
-                oy = dr1 + ty * sh - r1
-                for c, r in range_cells(*src):
-                    cell = snapshot.get((c, r)) if move else self.sheet.cell(c, r)
-                    nc, nr = c + ox, r + oy
-                    if not (0 <= nc < MAX_COLS and 0 <= nr < MAX_ROWS):
-                        continue
-                    old = self.sheet.cell(nc, nr)
-                    if old is not None and old.kind == FORMULA:
-                        self.engine.unregister((nc, nr))
-                    if cell is not None:
-                        new = cell.copy()
-                        if new.kind == FORMULA:
-                            try:
-                                new.raw = shift_raw(new.raw, ox, oy)
-                            except FormulaSyntaxError:
-                                pass
-                        self.sheet.cells[(nc, nr)] = new
-                        self.engine.note_edit((nc, nr))
-                    else:
-                        # copying a blank erases the destination (as in 1-2-3)
-                        self.sheet.clear_cell(nc, nr)
+                if cell is None:
+                    self.sheet.clear_cell(c, r)
+                    continue
+                new = cell.copy()
+                if new.kind == FORMULA:
+                    try:
+                        new.raw = shift_raw(new.raw, 1, 0)
+                    except FormulaSyntaxError:
+                        pass
+                self.sheet.cells[(c, r)] = new
+                self.engine.note_edit((c, r))
+        self._register_all()
         self._recalc(force=True)
-        self.message_msg(("Moved " if move else "Copied ") + format_range(*src) +
-                         " to " + format_range(*dst))
+        self.message_msg(f"Justified {format_range(*rng)}")
+
+    def cmd_global_format(self, choice):
+        self.sheet.global_fmt = _FORMAT_KINDS.get(choice.upper())
+        self._recalc(force=True)
+        self.message_msg(f"Global format: {choice.upper()}")
 
     # ------------------------------------------------------------------
     # file commands

@@ -215,12 +215,17 @@ becomes `@ERR()` (`engine.adjust_refs`).
   STATUS | PAGE
 /RANGE
   FORMAT (range, then choice FIXED/SCIENTIFIC/CURRENCY/PERCENT/COMMA/GENERAL/TEXT/DATE/TIME/HIDDEN)
-  ERASE (range) | JUSTIFY (range) | LABEL (range, LEFT/CENTER/RIGHT)
+  ERASE (range) | JUSTIFY (range; rotates each row one cell right, rightmost wraps
+        to the leftmost column, formula refs shifted) | LABEL (range, LEFT/CENTER/RIGHT)
   NAME  CREATE (name, range; range may be sheet-qualified `B!A1..B2` or 3-D `A:C!A1..B2`)
         | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM) | RESET | TABLE
   PROTECT | UNPROTECT (range) | INPUT (range)
   TRANSPOSE (range, dest cell) | VALUE (range, dest cell) | SEARCH (range, text)
-/COPY | /MOVE                  (source range, dest anchor/range; tiling on multiples)
+/COPY | /MOVE                  (source range, dest anchor/range; tiling on multiples;
+        source/dest may be sheet-qualified `B!A1..B2` or 3-D `A:C!A1..B2` — a 3-D source
+        copies sheet-by-sheet onto a 3-D destination of the same size, or onto the
+        active sheet when the destination is 2-D; /MOVE clears the source sheets)
+/WORKSHEET GLOBAL FORMAT        (choice; sets the sheet-wide default format)
 /FILE
   SAVE | SAVE-AS (file) | LOAD (file)
   COMBINE  COPY | ADD | SUBTRACT  (file, range-in-file, dest cell)

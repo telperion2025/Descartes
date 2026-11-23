@@ -38,7 +38,10 @@ MENU_TREE = [
             _m("COL-PREFIX", action="wg_col_prefix",
                prompt=[{"text": "Column prefix:", "kind": "choice", "choices": ["'", "^", '"']}]),
             _m("ZERO-SUPPRESS", action="wg_zero_suppress"),
-            _m("FORMAT", action="wg_format"),
+            _m("FORMAT", action="wg_format",
+               prompt=[{"text": "Global format:", "kind": "choice",
+                        "choices": ["FIXED", "SCIENTIFIC", "CURRENCY", "PERCENT",
+                                    "COMMA", "GENERAL", "TEXT", "DATE", "TIME", "HIDDEN"]}]),
             _m("RECALCULATION", [
                 _m("AUTO", action="wg_recalc_auto"),
                 _m("MANUAL", action="wg_recalc_manual"),
