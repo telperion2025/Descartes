@@ -225,3 +225,42 @@ protocol simply stay keyboard-only; unexpected mouse bytes never leak into cell 
 
 F1 shows the function-key help screen in a centered bordered window; any key returns.
 `/WORKSHEET STATUS` shows the current cell, recalc mode, cell count, and CALC state.
+
+## 12. Macros
+
+A macro is a cell whose text starts with `{`. It runs the 1-2-3 `{...}` command
+language: commands in braces, keystrokes as plain text between them.
+
+**Writing and running one:**
+
+1. Enter a macro cell, e.g. in `A1`: `{GOTO B1}{LET B1, 42}{ENTER}`
+2. Assign it to a key: `/RANGE NAME CREATE`, name `M`, range `A1`.
+3. Press **Alt+M** in READY mode to run it. (Alt+letter with no matching
+   single-letter name is passed through as ordinary input.)
+
+**Commands:**
+
+| Command | Effect |
+| --- | --- |
+| `{GOTO cell}` | move the cursor |
+| `{LET cell, value}` / `{PUT ...}` | enter a value/formula/label into a cell (value may be a formula, e.g. `{LET A1, =B1*2}`) |
+| `{BEEP}` | audible beep |
+| `{RECALC}` | force full recalculation |
+| `{WAIT secs}` | pause (capped at 5 s) |
+| `{SYSTEM command}` | run a shell command in the SYSTEM window |
+| `{BRANCH cell}` | jump to another macro cell (no return) |
+| `{CALL cell}` / `{RETURN}` | call a macro as a subroutine |
+| `{HALT}` | stop the macro |
+| `{QUIT}` | quit the application |
+| `{IF expr} ... {ELSE} ... {END}` | conditional block; `expr` is a normal 1-2-3 formula evaluated at the macro cell (nestable) |
+| `{LOOK}` | no-op (1-2-3 compatibility) |
+
+**Special keys:** `{LEFT} {RIGHT} {UP} {DOWN} {HOME} {ENDKEY} {PGUP} {PGDN} {INS}
+{DEL} {BS} {TAB} {ENTER} {ESC} {F1}`–`{F12}`. Note `{END}` closes an `IF` block;
+use `{ENDKEY}` for the End key. Any text outside braces is typed into the app
+keystroke by keystroke, so a macro can drive menus, entry, and navigation, e.g.
+`{F2}{BS}{BS}7{ENTER}`.
+
+**Limits:** macros are capped at 10000 steps and 16 `CALL`/`BRANCH` depth levels,
+so a runaway macro stops with a `Macro:` error instead of hanging. Macro cells
+are ordinary label cells and save/load with `.vg1` like anything else.
