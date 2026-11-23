@@ -15,7 +15,8 @@ from . import data_cmd
 from . import fmt as _fmt
 from . import graph as _graph
 from . import persist
-from .engine import Engine, FormulaSyntaxError, parse, shift_raw
+from .engine import (Engine, FormulaSyntaxError, adjust_refs, parse, serialize,
+                     shift_raw)
 from .grid import (EMPTY, FORMULA, LABEL, MAX_COLS, MAX_ROWS, NUMBER, Worksheet,
                    col_letters, format_address, format_range, normalize_corners,
                    parse_address, range_cells, split_range, VALUE_START)
@@ -151,10 +152,10 @@ class App:
             "copy": lambda a: self.cmd_copy(a, move=False),
             "move": lambda a: self.cmd_copy(a, move=True),
             "w_erase": lambda a: self.cmd_range_erase(split_range(a[0])),
-            "w_insert_col": lambda a: self.sheet.insert_cols(parse_address(a[0])[0]) or self.engine.register_all(),
-            "w_insert_row": lambda a: self.sheet.insert_rows(parse_address(a[0])[1]) or self.engine.register_all(),
-            "w_delete_col": lambda a: self.sheet.delete_cols(parse_address(a[0])[0]) or self.engine.register_all(),
-            "w_delete_row": lambda a: self.sheet.delete_rows(parse_address(a[0])[1]) or self.engine.register_all(),
+            "w_insert_col": lambda a: self.cmd_insert_col(parse_address(a[0])[0]),
+            "w_insert_row": lambda a: self.cmd_insert_row(parse_address(a[0])[1]),
+            "w_delete_col": lambda a: self.cmd_delete_col(parse_address(a[0])[0]),
+            "w_delete_row": lambda a: self.cmd_delete_row(parse_address(a[0])[1]),
             "w_colwidth_set": lambda a: self.sheet.set_col_width(parse_address(a[1])[0], int(float(a[0]))),
             "w_colwidth_reset": lambda a: self.sheet.set_col_width(parse_address(a[0])[0], 9),
             "w_hide": lambda a: self.sheet.set_col_width(parse_address(a[0])[0], 0),
@@ -936,6 +937,50 @@ class App:
             f"cells={len(self.sheet.cells)}  recalc={'CALC' if self.engine.needs_calc() else 'ok'}")
 
     # ------------------------------------------------------------------
+    # worksheet structural edits (adjust formula references like 1-2-3)
+    # ------------------------------------------------------------------
+
+    def _adjust_formula_refs(self, axis, pos, delta, delete=False):
+        for key, cell in list(self.sheet.cells.items()):
+            if cell.kind != FORMULA or cell.raw is None:
+                continue
+            try:
+                new = serialize(adjust_refs(parse(cell.raw), axis, pos, delta, delete))
+            except FormulaSyntaxError:
+                continue
+            if cell.raw.startswith("+"):
+                new = "+" + new
+            cell.raw = new
+
+    def cmd_insert_col(self, col):
+        self.sheet.insert_cols(col)
+        self._adjust_formula_refs("col", col, 1)
+        self.engine.register_all()
+        self.engine.recalc(force=True)
+        self.message_msg(f"Inserted column at {col_letters(col)}")
+
+    def cmd_insert_row(self, row):
+        self.sheet.insert_rows(row)
+        self._adjust_formula_refs("row", row, 1)
+        self.engine.register_all()
+        self.engine.recalc(force=True)
+        self.message_msg(f"Inserted row at {row + 1}")
+
+    def cmd_delete_col(self, col):
+        self.sheet.delete_cols(col)
+        self._adjust_formula_refs("col", col, -1, delete=True)
+        self.engine.register_all()
+        self.engine.recalc(force=True)
+        self.message_msg(f"Deleted column at {col_letters(col)}")
+
+    def cmd_delete_row(self, row):
+        self.sheet.delete_rows(row)
+        self._adjust_formula_refs("row", row, -1, delete=True)
+        self.engine.register_all()
+        self.engine.recalc(force=True)
+        self.message_msg(f"Deleted row at {row + 1}")
+
+    # ------------------------------------------------------------------
     # range commands
     # ------------------------------------------------------------------
 
@@ -1064,12 +1109,20 @@ class App:
         dw, dh = dc2 - dc1 + 1, dr2 - dr1 + 1
         tiles_x = max(1, dw // sw)
         tiles_y = max(1, dh // sh)
+        snapshot = None
+        if move:
+            snapshot = {k: self.sheet.cell(*k) for k in range_cells(*src)}
+            for c, r in range_cells(*src):
+                old = self.sheet.cell(c, r)
+                if old is not None and old.kind == FORMULA:
+                    self.engine.unregister((c, r))
+                self.sheet.clear_cell(c, r)
         for ty in range(tiles_y):
             for tx in range(tiles_x):
                 ox = dc1 + tx * sw - c1
                 oy = dr1 + ty * sh - r1
                 for c, r in range_cells(*src):
-                    cell = self.sheet.cell(c, r)
+                    cell = snapshot.get((c, r)) if move else self.sheet.cell(c, r)
                     nc, nr = c + ox, r + oy
                     if not (0 <= nc < MAX_COLS and 0 <= nr < MAX_ROWS):
                         continue
@@ -1088,12 +1141,6 @@ class App:
                     else:
                         # copying a blank erases the destination (as in 1-2-3)
                         self.sheet.clear_cell(nc, nr)
-                if move:
-                    for c, r in range_cells(*src):
-                        old = self.sheet.cell(c, r)
-                        if old is not None and old.kind == FORMULA:
-                            self.engine.unregister((c, r))
-                        self.sheet.clear_cell(c, r)
         self.engine.recalc(force=True)
         self.message_msg(("Moved " if move else "Copied ") + format_range(*src) +
                          " to " + format_range(*dst))
@@ -1128,8 +1175,19 @@ class App:
         self.engine.register_all()
         self.engine.recalc(force=True)
         self.names = data.get("names", {})
-        self.cur = tuple(data.get("cursor", (0, 0)))
+        c, r = data.get("cursor", (0, 0))
+        self.cur = (max(0, min(MAX_COLS - 1, int(c))), max(0, min(MAX_ROWS - 1, int(r))))
         self.top = (0, 0)
+        self.top2 = (0, 0)
+        graphs = data.get("graphs") or []
+        if graphs:
+            self.graph = GraphDef.from_dict(graphs[0])
+        self.print_settings.update(data.get("print") or {})
+        win = data.get("window") or {}
+        self.split = win.get("split")
+        titles = win.get("titles") or (0, 0)
+        self.titles = (int(titles[0]), int(titles[1]))
+        self.active_pane = 0
         self.filepath = path
         self.message_msg(f"Loaded {path}")
 

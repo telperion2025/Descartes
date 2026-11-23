@@ -367,16 +367,16 @@ class Worksheet:
         self._shift_widths_cols(col, n)
 
     def delete_cols(self, col: int, n: int = 1) -> None:
-        self._shift_cells(-n, 0, lambda c, r: c >= col + n)
         self.cells = {k: v for k, v in self.cells.items() if not (col <= k[0] < col + n)}
+        self._shift_cells(-n, 0, lambda c, r: c >= col + n)
         self._shift_widths_cols(col + n, -n, drop=(col, col + n))
 
     def insert_rows(self, row: int, n: int = 1) -> None:
         self._shift_cells(0, n, lambda c, r: r >= row)
 
     def delete_rows(self, row: int, n: int = 1) -> None:
-        self._shift_cells(0, -n, lambda c, r: r >= row + n)
         self.cells = {k: v for k, v in self.cells.items() if not (row <= k[1] < row + n)}
+        self._shift_cells(0, -n, lambda c, r: r >= row + n)
 
     # -- iteration ----------------------------------------------------------
 

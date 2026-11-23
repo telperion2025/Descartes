@@ -185,7 +185,7 @@ def call(name: str, args, ctx):
         return fn(args, ctx)
     except _Propagate as p:
         return p.err
-    except (ZeroDivisionError, ValueError, OverflowError, IndexError):
+    except (ZeroDivisionError, ValueError, OverflowError, IndexError, TypeError):
         return ERR
 
 

@@ -13,6 +13,7 @@ time (hh:mm:ss, hh:mm).
 from __future__ import annotations
 
 import datetime as _dt
+import math as _math
 
 # Lotus 1-2-3 date serials: serial 1 = 1900-01-01, with the historical
 # fictitious 1900-02-29 at serial 60 (so serial 61 = 1900-03-01).
@@ -70,7 +71,7 @@ FIXED = lambda decimals=2: make("fixed", decimals=decimals)
 
 def general_number(value: float) -> str:
     """1-2-3 'General' rendering: shortest round-trip-ish, no exponent unless needed."""
-    if value != value:  # NaN
+    if not _math.isfinite(value):
         return "ERR"
     if value == int(value) and abs(value) < 1e15:
         return str(int(value))
@@ -90,6 +91,8 @@ def _thousands(int_part: str) -> str:
 
 
 def format_number(value: float, fmt: dict | None) -> str:
+    if not _math.isfinite(value):
+        return "ERR"
     if fmt is None:
         return general_number(value)
     kind = fmt.get("type", "general")

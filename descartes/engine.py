@@ -407,6 +407,55 @@ def shift_raw(raw: str, dc: int, dr: int) -> str:
     return out
 
 
+def adjust_refs(node, axis: str, pos: int, delta: int, delete: bool = False):
+    """Adjust every reference for /WORKSHEET INSERT (delta > 0) or DELETE
+    (delta < 0, band [pos, pos - delta)). Unlike copy-shift, absolute ($)
+    refs are adjusted too, as 1-2-3 does. Range corners adjust independently,
+    so ranges spanning pos expand/contract. A single-cell ref inside a deleted
+    band becomes @ERR()."""
+    maxv = MAX_COLS - 1 if axis == "col" else MAX_ROWS - 1
+
+    def adj(v):
+        if not delete:
+            return min(v + delta, maxv) if v >= pos else v
+        if v >= pos - delta:
+            return max(0, v + delta)
+        if v >= pos:
+            return None
+        return v
+
+    def adj_corner(corner):
+        c, r, ac, ar = corner
+        nv = adj(c if axis == "col" else r)
+        if nv is None:
+            nv = pos
+        if axis == "col":
+            return (nv, r, ac, ar)
+        return (c, nv, ac, ar)
+
+    kind = node[0]
+    if kind == "cell":
+        c, r, ac, ar = node[1], node[2], node[3], node[4]
+        nv = adj(c if axis == "col" else r)
+        if nv is None:
+            return ("func", "ERR", [])
+        if axis == "col":
+            return ("cell", nv, r, ac, ar)
+        return ("cell", c, nv, ac, ar)
+    if kind == "range":
+        return ("range", adj_corner(node[1]), adj_corner(node[2]))
+    if kind == "bin":
+        return ("bin", node[1], adjust_refs(node[2], axis, pos, delta, delete),
+                adjust_refs(node[3], axis, pos, delta, delete))
+    if kind == "un":
+        return ("un", node[1], adjust_refs(node[2], axis, pos, delta, delete))
+    if kind == "pct":
+        return ("pct", adjust_refs(node[1], axis, pos, delta, delete))
+    if kind == "func":
+        return ("func", node[1], [adjust_refs(a, axis, pos, delta, delete) for a in node[2]])
+    return node
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
@@ -526,16 +575,14 @@ def _apply_bin(op, a, b, ctx):
         return x
     if isinstance(y, F.Error):
         return y
-    if op == "+":
-        return x + y
-    if op == "-":
-        return x - y
-    if op == "*":
-        return x * y
+    if op in ("+", "-", "*"):
+        r = {"+": x + y, "-": x - y, "*": x * y}[op]
+        return r if math.isfinite(r) else F.ERR
     if op == "/":
         if y == 0:
             return F.ERR
-        return x / y
+        r = x / y
+        return r if math.isfinite(r) else F.ERR
     if op == "^":
         try:
             r = x ** y
@@ -702,6 +749,8 @@ class Engine:
             self._graph_stale = True
 
     def register_all(self):
+        self.formulas.clear()
+        self._graph_stale = True
         for key, cell in list(self.sheet.cells.items()):
             if cell.kind == "FORMULA":
                 self.register(key)
@@ -823,7 +872,7 @@ class Engine:
             v = comp.fn(ctx)
         except F._Propagate as p:
             v = p.err
-        except (ZeroDivisionError, ValueError, OverflowError):
+        except (ZeroDivisionError, ValueError, OverflowError, TypeError):
             v = F.ERR
         if isinstance(v, RangeValue):
             v = v.scalar(ctx)

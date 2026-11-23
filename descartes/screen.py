@@ -65,10 +65,12 @@ class Screen:
         h, w = self.stdscr.getmaxyx()
         if w < MIN_W or h < MIN_H:
             raise TerminalTooSmall(w, h)
+        import locale
         try:
-            self.utf8 = curses.curs_set(0) is not None or True
-        except curses.error:
-            pass
+            enc = (locale.getpreferredencoding(False) or "").upper()
+        except Exception:
+            enc = ""
+        self.utf8 = "UTF-8" in enc or "UTF8" in enc.replace("-", "")
         curses.curs_set(0)
         self.stdscr.keypad(True)
         self.has_color = curses.has_colors()
