@@ -16,7 +16,7 @@ python3 -m descartes [file.vg1|file.wk1|file.dif|file.txt]
  row 1   menu bar (blank blue in READY; the menu tree after / or F10)
  row 2   control panel: cell address + mode on the left, prompt text on the right
  row 3   cell content line: the raw text of the highlighted cell (full text)
- row 4   column headers A B C ... (current column highlighted)
+ row 4   column headers A B C ... in reverse video (current column bold)
  rows 5-22  worksheet cells, 7-char row-number gutter on the left
  row 23  indicator line: CAPS NUM SCROLL CALC MEM OVR/INS, clock on the right
  row 24  message line

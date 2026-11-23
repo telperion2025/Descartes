@@ -38,8 +38,8 @@ MIN_W, MIN_H = 80, 25
 P_BG = 1        # white / black   worksheet background, headers, row gutter
 P_MENU = 2      # white / blue    menu bar (blank blue in READY) and dropdowns
 P_HILITE = 3    # black / white   highlighted menu item, POINT range, dialog cursor
-P_HEAD = 4      # white / black   column headers, row gutter
-P_HEAD_HI = 5   # white / black + bold   current column header / row, title cols
+P_HEAD = 4      # black / white   column headers, row gutter (reverse video, as in 1-2-3)
+P_HEAD_HI = 5   # black / white + bold   current column header / row, title cols
 P_ERROR = 6     # red / white     error messages
 P_CURSOR = 7    # black / white   cursor cell (reverse video, as in 1-2-3)
 P_PANEL = 8     # black / cyan    control panel (rows 2-3) and indicator line
@@ -91,8 +91,8 @@ class Screen:
             pair(P_BG, curses.COLOR_WHITE, curses.COLOR_BLACK)
             pair(P_MENU, curses.COLOR_WHITE, curses.COLOR_BLUE)
             pair(P_HILITE, curses.COLOR_BLACK, curses.COLOR_WHITE, bold=True)
-            pair(P_HEAD, curses.COLOR_WHITE, curses.COLOR_BLACK)
-            pair(P_HEAD_HI, curses.COLOR_WHITE, curses.COLOR_BLACK, bold=True)
+            pair(P_HEAD, curses.COLOR_BLACK, curses.COLOR_WHITE)
+            pair(P_HEAD_HI, curses.COLOR_BLACK, curses.COLOR_WHITE, bold=True)
             pair(P_ERROR, curses.COLOR_RED, curses.COLOR_WHITE)
             pair(P_CURSOR, curses.COLOR_BLACK, curses.COLOR_WHITE, bold=True)
             pair(P_PANEL, curses.COLOR_BLACK, curses.COLOR_CYAN)
@@ -102,8 +102,8 @@ class Screen:
                 P_BG: 0,
                 P_MENU: curses.A_REVERSE,
                 P_HILITE: curses.A_REVERSE | curses.A_BOLD,
-                P_HEAD: 0,
-                P_HEAD_HI: curses.A_BOLD,
+                P_HEAD: curses.A_REVERSE,
+                P_HEAD_HI: curses.A_REVERSE | curses.A_BOLD,
                 P_ERROR: curses.A_REVERSE,
                 P_CURSOR: curses.A_REVERSE | curses.A_BOLD,
                 P_PANEL: curses.A_REVERSE,

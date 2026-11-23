@@ -22,7 +22,7 @@ from .grid import (EMPTY, FORMULA, LABEL, MAX_COLS, MAX_ROWS, NUMBER, Worksheet,
                    is_valid_name, normalize_corners, parse_address, range_cells,
                    split_range, split_range_any, VALUE_START)
 from .graph import GraphDef
-from .keys import MouseParser, read_event
+from .keys import MouseParser, RawReader, read_event
 from .menus import MENU_TREE, TOP_LABELS, MenuState
 from .screen import (GUTTER_W, MIN_H, MIN_W, ROW_CONTENT, ROW_CONTROL,
                      ROW_ERROR, ROW_GRID0, ROW_GRID1, ROW_HEADERS,
@@ -391,8 +391,14 @@ class App:
     def run(self):
         self.screen.init()
         self.screen.draw(self)
+        reader = None
+        if os.environ.get("DESCARTES_RAW_INPUT", "1") != "0" and hasattr(self.stdscr, "fileno"):
+            try:
+                reader = RawReader(self.stdscr.fileno())
+            except (OSError, ValueError):
+                reader = None
         while self.running:
-            ev = read_event(self.stdscr)
+            ev = reader.read_event() if reader is not None else read_event(self.stdscr)
             if ev is None:
                 continue
             try:
