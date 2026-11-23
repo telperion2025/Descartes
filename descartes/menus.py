@@ -52,10 +52,12 @@ MENU_TREE = [
         _m("INSERT", [
             _m("COLUMN", action="w_insert_col", prompt=[{"text": "Insert columns at:", "kind": "cell"}]),
             _m("ROW", action="w_insert_row", prompt=[{"text": "Insert rows at:", "kind": "cell"}]),
+            _m("SHEET", action="w_insert_sheet"),
         ]),
         _m("DELETE", [
             _m("COLUMN", action="w_delete_col", prompt=[{"text": "Delete columns at:", "kind": "cell"}]),
             _m("ROW", action="w_delete_row", prompt=[{"text": "Delete rows at:", "kind": "cell"}]),
+            _m("SHEET", action="w_delete_sheet", prompt=[{"text": "Sheet name:", "kind": "text"}]),
         ]),
         _m("ERASE", action="w_erase", prompt=[{"text": "Erase range:", "kind": "range"}]),
         _m("COLUMN-WIDTH", [

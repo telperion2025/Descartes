@@ -100,8 +100,12 @@ class App:
     def __init__(self, stdscr, filepath: str | None = None):
         self.stdscr = stdscr
         self.screen = Screen(stdscr)
-        self.sheet = Worksheet("A")
-        self.engine = Engine(self.sheet)
+        self.sheets: dict[str, Worksheet] = {}
+        self.sheet_order: list[str] = []
+        self.active = "A"
+        self.engines: dict[str, Engine] = {}
+        self.xdeps: dict = {}
+        self._add_sheet("A", active=True)
         self.mode = READY
         self.cur = (0, 0)
         self.top = (0, 0)
@@ -146,6 +150,124 @@ class App:
             self.load_file(filepath)
 
     # ------------------------------------------------------------------
+    # multi-sheet workbook model
+    # ------------------------------------------------------------------
+
+    @property
+    def sheet(self) -> Worksheet:
+        return self.sheets[self.active]
+
+    @property
+    def engine(self) -> Engine:
+        return self.engines[self.active]
+
+    def _add_sheet(self, name, ws=None, active=False):
+        if ws is None:
+            ws = Worksheet(name)
+        self.sheets[name] = ws
+        self.sheet_order.append(name)
+        eng = Engine(ws)
+        eng.wb = self
+        self.engines[name] = eng
+        if active:
+            self.active = name
+        return ws
+
+    def span(self, s1, s2):
+        s1, s2 = s1.upper(), s2.upper()
+        if s1 not in self.sheets:
+            return [s1]
+        if s2 not in self.sheets:
+            return [s1]
+        i, j = self.sheet_order.index(s1), self.sheet_order.index(s2)
+        if i > j:
+            i, j = j, i
+        return self.sheet_order[i:j + 1]
+
+    def switch_sheet(self, delta):
+        i = self.sheet_order.index(self.active)
+        self.active = self.sheet_order[(i + delta) % len(self.sheet_order)]
+        self.message_msg(f"Sheet {self.active}")
+
+    def cmd_insert_sheet(self):
+        i = 0
+        while col_letters(i) in self.sheets:
+            i += 1
+        name = col_letters(i)
+        ws = Worksheet(name)
+        self.sheets[name] = ws
+        eng = Engine(ws)
+        eng.wb = self
+        self.engines[name] = eng
+        pos = self.sheet_order.index(self.active)
+        self.sheet_order.insert(pos + 1, name)
+        self.active = name
+        self._rebuild_xdeps()
+        self.message_msg(f"Inserted sheet {name}")
+
+    def cmd_delete_sheet(self, name):
+        name = name.upper()
+        if name not in self.sheets:
+            self.error_msg(f"No sheet {name}")
+            return
+        if len(self.sheets) == 1:
+            self.error_msg("Cannot delete the last sheet")
+            return
+        del self.sheets[name]
+        del self.engines[name]
+        self.sheet_order.remove(name)
+        self.names = {n: v for n, v in self.names.items() if v.get("sheet") != name}
+        if self.active == name:
+            self.active = self.sheet_order[0]
+        self._rebuild_xdeps()
+        self._recalc(force=True)
+        self.message_msg(f"Deleted sheet {name}")
+
+    def _rebuild_xdeps(self):
+        xd: dict = {}
+        fkeys = [(sn, k) for sn, eng in self.engines.items() for k in eng.formulas]
+        for sname, eng in self.engines.items():
+            for key, comp in eng.formulas.items():
+                for (s1, s2, c, r) in comp.xrefs:
+                    for sn in self.span(s1, s2):
+                        xd.setdefault((sn, c, r), set()).add((sname, key))
+                for (s1, s2, c1, c2) in comp.xranges:
+                    area = (c2[0] - c1[0] + 1) * (c2[1] - c1[1] + 1)
+                    for sn in self.span(s1, s2):
+                        if area <= 65536:
+                            for c, r in range_cells(c1, c2):
+                                xd.setdefault((sn, c, r), set()).add((sname, key))
+                        else:
+                            for (fs, fk) in fkeys:
+                                if fs == sn and c1[0] <= fk[0] <= c2[0] and c1[1] <= fk[1] <= c2[1]:
+                                    xd.setdefault((sn, fk[0], fk[1]), set()).add((sname, key))
+        self.xdeps = xd
+
+    def _touch(self, sheet, key):
+        eng = self.engines.get(sheet)
+        if eng is not None:
+            eng.mark_dirty(key)
+        for (fs, fk) in self.xdeps.get((sheet, key[0], key[1]), ()):
+            feng = self.engines.get(fs)
+            if feng is not None and fk in feng.formulas:
+                feng.mark_dirty(fk)
+
+    def _register_all(self):
+        for eng in self.engines.values():
+            eng.register_all()
+        self._rebuild_xdeps()
+
+    def _recalc(self, force=False):
+        if any(eng._graph_stale for eng in self.engines.values()):
+            self._rebuild_xdeps()
+        for _ in range(max(1, len(self.engines))):
+            for eng in self.engines.values():
+                if force or eng.mode == "auto":
+                    eng.recalc(force=True)
+                else:
+                    eng.recalc(force=False)
+
+    # ------------------------------------------------------------------
     # action table
     # ------------------------------------------------------------------
 
@@ -155,6 +277,8 @@ class App:
             "copy": lambda a: self.cmd_copy(a, move=False),
             "move": lambda a: self.cmd_copy(a, move=True),
             "w_erase": lambda a: self.cmd_range_erase(split_range(a[0])),
+            "w_insert_sheet": lambda a: self.cmd_insert_sheet(),
+            "w_delete_sheet": lambda a: self.cmd_delete_sheet(a[0]),
             "w_insert_col": lambda a: self.cmd_insert_col(parse_address(a[0])[0]),
             "w_insert_row": lambda a: self.cmd_insert_row(parse_address(a[0])[1]),
             "w_delete_col": lambda a: self.cmd_delete_col(parse_address(a[0])[0]),
@@ -385,12 +509,16 @@ class App:
             self.move(c, max(0, r - 18))
         elif name == "PGDN":
             self.move(c, min(MAX_ROWS - 1, r + 18))
+        elif name == "CTRL_PGUP":
+            self.switch_sheet(-1)
+        elif name == "CTRL_PGDN":
+            self.switch_sheet(1)
         elif name == "F1":
             self.mode = HELP
         elif name == "F2":
             self.start_edit()
         elif name == "F9":
-            self.engine.recalc(force=True)
+            self._recalc(force=True)
             self.message_msg("Recalculated")
         elif name == "F10":
             self.open_menu()
@@ -458,8 +586,8 @@ class App:
         if cell is not None and cell.kind == FORMULA:
             self.engine.unregister(key)
         self.sheet.clear_cell(*key)
-        self.engine.mark_dirty(key)
-        self.engine.recalc()
+        self._touch(self.active, key)
+        self._recalc()
 
     def submit_entry(self):
         raw = self.entry
@@ -484,7 +612,8 @@ class App:
             self.error_msg(str(e))
             return
         self.engine.note_edit(key)
-        self.engine.recalc()
+        self._touch(self.active, key)
+        self._recalc()
         self.mode = READY
         self.entry = ""
         self.entry_pos = 0
@@ -632,7 +761,7 @@ class App:
                 self._actions[item.action]([])
             except Exception as e:
                 self.error_msg(str(e))
-            self.engine.recalc()
+            self._recalc()
 
     def dispatch(self, item, answers):
         handler = self._actions.get(item.action)
@@ -643,7 +772,7 @@ class App:
             handler(answers)
         except Exception as e:
             self.error_msg(str(e))
-        self.engine.recalc()
+        self._recalc()
 
     # ------------------------------------------------------------------
     # DIALOG / prompt chain
@@ -937,14 +1066,15 @@ class App:
         self.sheet.recalc_mode = mode
         self.sheet.iterations = iterations
         self.engine.sync_settings()
-        self.engine.recalc(force=True)
+        self._recalc(force=True)
         self.message_msg(f"Recalculation: {mode}" + (f" ({iterations} iterations)" if iterations else ""))
 
     def cmd_status(self):
         c, r = self.cur
         self.message_msg(
             f"{self.sheet.name}!{format_address(c, r)}  mode={self.sheet.recalc_mode}  "
-            f"cells={len(self.sheet.cells)}  recalc={'CALC' if self.engine.needs_calc() else 'ok'}")
+            f"sheets={len(self.sheets)}  cells={len(self.sheet.cells)}  "
+            f"recalc={'CALC' if self.engine.needs_calc() else 'ok'}")
 
     # ------------------------------------------------------------------
     # worksheet structural edits (adjust formula references like 1-2-3)
@@ -965,29 +1095,29 @@ class App:
     def cmd_insert_col(self, col):
         self.sheet.insert_cols(col)
         self._adjust_formula_refs("col", col, 1)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Inserted column at {col_letters(col)}")
 
     def cmd_insert_row(self, row):
         self.sheet.insert_rows(row)
         self._adjust_formula_refs("row", row, 1)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Inserted row at {row + 1}")
 
     def cmd_delete_col(self, col):
         self.sheet.delete_cols(col)
         self._adjust_formula_refs("col", col, -1, delete=True)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Deleted column at {col_letters(col)}")
 
     def cmd_delete_row(self, row):
         self.sheet.delete_rows(row)
         self._adjust_formula_refs("row", row, -1, delete=True)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Deleted row at {row + 1}")
 
     # ------------------------------------------------------------------
@@ -1001,7 +1131,7 @@ class App:
                 self.engine.unregister((c, r))
             self.sheet.clear_cell(c, r)
         self.engine.rebuild()
-        self.engine.recalc(force=True)
+        self._recalc(force=True)
         self.message_msg(f"Erased {format_range(*rng)}")
 
     def cmd_range_format(self, rng, choice):
@@ -1078,8 +1208,8 @@ class App:
             if new.kind == FORMULA:
                 new.raw = shift_raw(new.raw, (dc - c1) + (r - r1), (dr - r1) + (c - c1))
             self.sheet.cells[(dc + (r - r1), dr + (c - c1))] = new
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
 
     def cmd_range_value(self, src, dst):
         from .functions import Error
@@ -1097,8 +1227,8 @@ class App:
                 self.sheet.set_entry(nc, nr, "@ERR" if v.code == "ERR" else "@NA")
             else:
                 self.sheet.set_entry(nc, nr, _fmt.general_number(float(v)))
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
 
     def cmd_search(self, rng, what):
         (c1, r1), (c2, r2) = rng
@@ -1158,7 +1288,7 @@ class App:
                     else:
                         # copying a blank erases the destination (as in 1-2-3)
                         self.sheet.clear_cell(nc, nr)
-        self.engine.recalc(force=True)
+        self._recalc(force=True)
         self.message_msg(("Moved " if move else "Copied ") + format_range(*src) +
                          " to " + format_range(*dst))
 
@@ -1169,7 +1299,7 @@ class App:
     def cmd_save(self, path):
         if not path.lower().endswith(".vg1"):
             path += ".vg1"
-        persist.save_vg1(path, {self.sheet.name: self.sheet}, self.names,
+        persist.save_vg1(path, self.sheets, self.names, active=self.active,
                          cursor=self.cur, recalc_mode=self.sheet.recalc_mode,
                          iterations=self.sheet.iterations,
                          graphs=[self.graph.to_dict()] if (self.graph.series or self.graph.x_range) else [],
@@ -1185,12 +1315,18 @@ class App:
             self.error_msg(f"Cannot load: {e}")
             return
         sheets = data["sheets"]
-        self.sheet = sheets.get("A") or next(iter(sheets.values()))
-        self.engine = Engine(self.sheet)
-        self.sheet.recalc_mode = data.get("recalc_mode", "auto")
-        self.sheet.iterations = data.get("iterations", 0)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self.sheets = {}
+        self.sheet_order = []
+        self.engines = {}
+        for name, ws in sheets.items():
+            self._add_sheet(name, ws=ws)
+        active = data.get("active") or next(iter(sheets))
+        self.active = active if active in self.sheets else self.sheet_order[0]
+        for ws in self.sheets.values():
+            ws.recalc_mode = data.get("recalc_mode", "auto")
+            ws.iterations = data.get("iterations", 0)
+        self._register_all()
+        self._recalc(force=True)
         self.names = data.get("names", {})
         c, r = data.get("cursor", (0, 0))
         self.cur = (max(0, min(MAX_COLS - 1, int(c))), max(0, min(MAX_ROWS - 1, int(r))))
@@ -1228,8 +1364,8 @@ class App:
                 base = float(cur) if isinstance(cur, (int, float)) else 0.0
                 nv = float(v) if isinstance(v, (int, float)) else 0.0
                 self.sheet.set_entry(nc, nr, _fmt.general_number(base + nv if op == "add" else base - nv))
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Combined {path} ({op})")
 
     def cmd_xtract(self, path, rng, fmt_kind):
@@ -1279,8 +1415,8 @@ class App:
             nc, nr = dc + c, dr + r
             if 0 <= nc < MAX_COLS and 0 <= nr < MAX_ROWS:
                 self.sheet.cells[(nc, nr)] = cell.copy()
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Imported {path} at {format_address(dc, dr)}")
 
     # ------------------------------------------------------------------

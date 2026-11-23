@@ -205,6 +205,8 @@ class Screen:
 
     def draw_control(self, app):
         addr = format_address(app.cur[0], app.cur[1])
+        if len(app.sheets) > 1:
+            addr = f"{app.active}!{addr}"
         mode = app.mode
         left = f"{addr}: {mode}"
         self.put(ROW_CONTROL, 0, " " * self.size()[1], self.a(P_PANEL))

@@ -33,8 +33,8 @@ pure logic and is unit-tested without a terminal (fake-curses harness drives the
 
 - Grid limits (Release 3.1): **256 columns A..IV x 8192 rows**. Cell address =
   letters + 1-based row (`A1..IV8192`). Internally cells are keyed
-  `(sheet_name, col, row)` with zero-based `col`/`row`, so later phases can add
-  multi-sheet and 3-D ranges without migration; a file currently holds a single sheet.
+  `(sheet_name, col, row)` with zero-based `col`/`row`; files hold multiple sheets
+  (A, B, C, ...), each a `Worksheet`, with cross-sheet and 3-D references.
 - Column widths: per-column 0-240 chars, global default **9**; width affects display
   only, never storage. Row height is one screen line.
 - `Cell`:
@@ -91,6 +91,11 @@ pure logic and is unit-tested without a terminal (fake-curses harness drives the
 
 - Parentheses; function calls `@NAME(arg, ...)` (also `@NA` with no parentheses).
 - A leading `+` is the formula indicator, not an operator.
+- Sheet-qualified refs: `B!A1` (single sheet), 3-D ranges `A:C!A1..B2` (sheets A through
+  C inclusive; `$` allowed on sheet names, e.g. `$A:$C!A1`). A 3-D range inside a
+  function aggregates over all sheets in the span (`@SUM(A:C!A1..B2)`); in scalar
+  context it resolves to the active sheet if it is in the span, else the span's first
+  sheet. Copy/shift keeps the sheet span; insert/delete adjusts the cell corners.
 - A range used in a scalar context resolves by implicit intersection with the formula
   cell (single-row/single-column ranges intersect by column/row); otherwise the first
   cell of the range is used.
@@ -188,8 +193,8 @@ Top level: `WORKSHEET RANGE COPY MOVE FILE PRINT GRAPH DATA SYSTEM ADD-IN`
   GLOBAL  LABEL-PREFIX | COL-PREFIX | ZERO-SUPPRESS | FORMAT
           RECALCULATION  AUTO | MANUAL | ITERATION (prompt: count)
           PROTECTION  ENABLE | DISABLE
-  INSERT  COLUMN | ROW          (prompt: cell)
-  DELETE  COLUMN | ROW          (prompt: cell)
+  INSERT  COLUMN | ROW (cell) | SHEET
+  DELETE  COLUMN | ROW (cell) | SHEET (name)
 
 INSERT/DELETE adjust formula references like 1-2-3: every reference (including `$`
 absolute ones) at or beyond the edit point shifts by the inserted/deleted amount, ranges
@@ -249,6 +254,7 @@ accept typed text or POINT-mode selection (Enter on an empty entry switches to P
 | Backspace | erase cell | delete char | — | back one level | delete char / previous prompt |
 | arrows | move | move entry cursor (L/R) | move | navigate | move entry cursor |
 | PgUp/PgDn/Home/End | scroll/jump | cursor to start/end | move | — | — |
+| Ctrl+PgUp / Ctrl+PgDn | previous / next sheet (wraps) | | | | |
 | F1 | help screen | | | | |
 | F2 / double-click | EDIT | | | | |
 | F9 | force recalc | | | | |
@@ -357,5 +363,6 @@ The acceptance walkthrough of the spec is driven end-to-end in
 
 ## 13. Non-goals
 
-Macros (3.1 `{commands}`), multi-sheet printing and 3-D ranges, backsolver, mouse
-column-resize handles, color beyond text modes, multi-line cells.
+Macros (3.1 `{commands}`), multi-sheet printing, backsolver, mouse column-resize
+handles, color beyond text modes, multi-line cells. (Multi-sheet workbooks and 3-D
+ranges are implemented: `/WORKSHEET INSERT/DELETE SHEET`, Ctrl+PgUp/PgDn, `A:C!A1..B2`.)

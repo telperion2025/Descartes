@@ -32,7 +32,7 @@ VG1_VERSION = 1
 
 def save_vg1(path, sheets: dict[str, Worksheet], names: dict | None = None,
              cursor=(0, 0), recalc_mode="auto", iterations=0, graphs=None,
-             print_settings=None, window=None):
+             print_settings=None, window=None, active=None):
     """Write the native .vg1 JSON file. Deterministic ordering (sheet,row,col)."""
     doc = {
         "format": VG1_FORMAT,
@@ -41,6 +41,7 @@ def save_vg1(path, sheets: dict[str, Worksheet], names: dict | None = None,
         "names": {},
         "recalc": {"mode": recalc_mode, "iterations": iterations},
         "cursor": [cursor[0], cursor[1]],
+        "active": active or (next(iter(sheets)) if sheets else "A"),
         "graphs": graphs or [],
         "print": print_settings or {},
         "window": window or {},
@@ -100,6 +101,7 @@ def load_vg1(path):
         "recalc_mode": recalc.get("mode", "auto"),
         "iterations": int(recalc.get("iterations", 0)),
         "cursor": (int(c[0]), int(c[1])),
+        "active": doc.get("active"),
         "graphs": doc.get("graphs", []),
         "print": doc.get("print", {}),
         "window": doc.get("window", {}),

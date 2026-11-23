@@ -171,6 +171,7 @@ _RAW_SEQUENCES = {
     "\x1b[A": "UP", "\x1b[B": "DOWN", "\x1b[C": "RIGHT", "\x1b[D": "LEFT",
     "\x1b[H": "HOME", "\x1b[F": "END",
     "\x1b[5~": "PGUP", "\x1b[6~": "PGDN",
+    "\x1b[5;5~": "CTRL_PGUP", "\x1b[6;5~": "CTRL_PGDN",
     "\x1b[2~": "INS", "\x1b[3~": "DEL",
     "\x1bOA": "UP", "\x1bOB": "DOWN", "\x1bOC": "RIGHT", "\x1bOD": "LEFT",
     "\x1bOH": "HOME", "\x1bOF": "END",
