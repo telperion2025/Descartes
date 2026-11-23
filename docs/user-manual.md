@@ -18,7 +18,7 @@ python3 -m descartes [file.vg1|file.wk1|file.dif|file.txt]
  row 3   cell content line: the raw text of the highlighted cell (full text)
  row 4   column headers A B C ... in reverse video (current column bold)
  rows 5-22  worksheet cells, 7-char row-number gutter on the left
- row 23  indicator line: CAPS NUM SCROLL CALC MEM OVR/INS, clock on the right
+ row 23  indicator line: CAPS NUM SCROLL CALC MEM OVR/INS, clock on the right (MEM lights when the workbook exceeds ~512 KB of cell storage)
  row 24  message line
  row 25  error line (red on white)
 ```
@@ -157,8 +157,10 @@ The full reference with every prompt is in the
 - `/FILE SAVE name` writes the native **.vg1** (JSON) format: cell raw text, formats,
   column widths, named ranges, recalc mode, cursor/window state, graph definitions —
   with deterministic ordering for clean diffs. `/FILE LOAD` reads `.vg1`, `.wk1`/`.wks`
-  (Lotus 1-2-3 Release 2 binary, formulas best-effort translated from RPN; WK3/WK4 files
-  are accepted with unknown records skipped), `.dif`, and delimited `.txt`.
+  (Lotus 1-2-3 Release 2 binary, formulas best-effort translated from RPN), `.wk3`
+  (Release 3.x: **all sheets** are imported, with sheet names, range names incl. 3-D
+  names, column widths, and formulas incl. cross-sheet/3-D references; password
+  protected files are rejected), `.dif`, and delimited `.txt`.
 - `/FILE XTRACT` exports a range as WK1, DIF, or text.
 - `/FILE COMBINE COPY|ADD|SUBTRACT` merges another file into the current sheet.
 - `/FILE IMPORT DIF|TEXT|NUMBERS` imports at a chosen anchor cell. DIF and text import
@@ -169,7 +171,9 @@ The full reference with every prompt is in the
 ## 7. Printing
 
 `/PRINT FILE name range` writes a text rendering of the range (respecting column widths,
-formats, optional borders and header). `/PRINT PRINTER` pipes the same output to a shell
+formats, optional borders and header). The range may be 3-D (`A:C!A1..B2`), in which
+case each sheet in the span is printed under a `Sheet X` heading. `/PRINT RANGE`
+accepts the same 3-D syntax plus a free-text destination (PRINTER, `|pipe`, file name). `/PRINT PRINTER` pipes the same output to a shell
 command (`|cmd`), `$PAGER`, or `DESCARTES_PRINTER`. `/PRINT LINES-PAGE`, `MARGINS`,
 `BORDERS`, `HEADER` adjust the layout.
 
@@ -213,7 +217,7 @@ disabled on exit. Behaviors:
 | Menu bar item | open dropdown | slide across bar | — |
 | Dropdown item | execute | move highlight | — |
 | Cell | move cursor (submit in POINT mode) | extend selection | edit cell (F2) |
-| Column header | select column | range of columns | auto-fit width |
+| Column header | select column | range of columns / drag right edge to resize width | double-click: auto-fit width |
 | Row gutter | select row | range of rows | — |
 | Content line | F2 into EDIT | — | — |
 | Wheel | scroll one row (Ctrl+wheel: horizontal) | autoscroll during drags | — |
@@ -254,6 +258,11 @@ language: commands in braces, keystrokes as plain text between them.
 | `{QUIT}` | quit the application |
 | `{IF expr} ... {ELSE} ... {END}` | conditional block; `expr` is a normal 1-2-3 formula evaluated at the macro cell (nestable) |
 | `{LOOK}` | no-op (1-2-3 compatibility) |
+| `{INPUT}` | pause; you edit the `/RANGE INPUT` range and press Enter, then the macro continues |
+| `{GETNUMBER "prompt", cell}` / `{GETLABEL ...}` | show prompt in the control panel, store your answer (number/text) into `cell`, macro continues |
+| `{MENUBRANCH cell}` | feed another cell's text as menu keystrokes (e.g. `'/FR`) |
+| `{DEFINE name:range}` | create a range name at runtime (3-D ranges allowed: `{DEFINE ALL: A:B!A1..A1}`) |
+| `{FOR counter, start, end[, step]} ... {FOREND}` | loop; the counter cell is set each iteration; `{FORBREAK}` exits early; loops nest |
 
 **Special keys:** `{LEFT} {RIGHT} {UP} {DOWN} {HOME} {ENDKEY} {PGUP} {PGDN} {INS}
 {DEL} {BS} {TAB} {ENTER} {ESC} {F1}`–`{F12}`. Note `{END}` closes an `IF` block;

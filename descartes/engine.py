@@ -66,7 +66,13 @@ def tokenize(s: str) -> list[Token]:
         if ch == '"':
             j = i + 1
             buf = []
-            while j < n and s[j] != '"':
+            while j < n:
+                if s[j] == '"':
+                    if j + 1 < n and s[j + 1] == '"':
+                        buf.append('"')
+                        j += 2
+                        continue
+                    break
                 buf.append(s[j])
                 j += 1
             if j >= n:
@@ -410,6 +416,80 @@ def _sheet_prefix(sheets) -> str:
     return f"{s1}!" if s1 == s2 else f"{s1}:{s2}!"
 
 
+def _remap_corner(corner, row_map):
+    c, r, ac, ar = corner
+    nr = row_map.get(r, r)
+    return (c, nr, ac, ar)
+
+
+def remap_rows(node, row_map):
+    """Rewrite same-sheet refs whose row is in row_map (old row -> new row).
+    Used when a sort permutes rows: refs into the sorted band follow the
+    data, refs elsewhere stay put."""
+    kind = node[0]
+    if kind == "cell":
+        c, r, ac, ar = node[1], node[2], node[3], node[4]
+        nr = row_map.get(r, r)
+        return ("cell", c, nr, ac, ar) if nr != r else node
+    if kind == "range":
+        return ("range", _remap_corner(node[1], row_map), _remap_corner(node[2], row_map))
+    if kind == "bin":
+        return ("bin", node[1], remap_rows(node[2], row_map), remap_rows(node[3], row_map))
+    if kind == "un":
+        return ("un", node[1], remap_rows(node[2], row_map))
+    if kind == "pct":
+        return ("pct", remap_rows(node[1], row_map))
+    if kind == "func":
+        return ("func", node[1], [remap_rows(a, row_map) for a in node[2]])
+    return node
+
+
+def remap_rows_raw(raw: str, row_map: dict) -> str:
+    return "+" + serialize(remap_rows(parse(raw), row_map))
+
+
+def span_names(s1, s2, order):
+    """Sheet names spanned by s1:s2 given the workbook sheet order."""
+    if s1 not in order or s2 not in order:
+        return [s1]
+    i, j = order.index(s1), order.index(s2)
+    if i > j:
+        i, j = j, i
+    return order[i:j + 1]
+
+
+def narrow_sheets(node, deleted, order, own):
+    """Rewrite 3-D refs in an AST after `deleted` was removed from the
+    workbook. `own` is the sheet of the formula being rewritten: a ref whose
+    span collapses to that sheet becomes 2-D, to another single sheet stays
+    sheet-qualified, and a ref that loses its whole span becomes @ERR()."""
+    kind = node[0]
+    if kind == "cell3d":
+        rest = [s for s in span_names(node[1][0], node[1][1], order) if s != deleted]
+        if not rest:
+            return ("func", "ERR", [])
+        if len(rest) == 1 and rest[0] == own:
+            return ("cell", node[2], node[3], node[4], node[5])
+        return ("cell3d", (rest[0], rest[-1]), node[2], node[3], node[4], node[5])
+    if kind == "range3d":
+        rest = [s for s in span_names(node[1][0], node[1][1], order) if s != deleted]
+        if not rest:
+            return ("func", "ERR", [])
+        if len(rest) == 1 and rest[0] == own:
+            return ("range", node[2], node[3])
+        return ("range3d", (rest[0], rest[-1]), node[2], node[3])
+    if kind == "bin":
+        return ("bin", node[1], narrow_sheets(node[2], deleted, order, own),
+                narrow_sheets(node[3], deleted, order, own))
+    if kind == "un":
+        return ("un", node[1], narrow_sheets(node[2], deleted, order, own))
+    if kind == "pct":
+        return ("pct", narrow_sheets(node[1], deleted, order, own))
+    if kind == "func":
+        return ("func", node[1], [narrow_sheets(a, deleted, order, own) for a in node[2]])
+    return node
+
+
 def collect_names(node, names: list | None = None):
     """-> list of range-name references in the AST (resolved at register/eval)."""
     if names is None:
@@ -618,12 +698,12 @@ class RangeValue:
         ctx = ctx or self.ctx
         fc, fr = ctx.fkey
         c1, r1, c2, r2 = self.c1, self.r1, self.c2, self.r2
-        if c1 <= fc <= c2 and r1 <= fr <= r2:
-            return self._val(ctx, fc, fr)
-        if r1 == r2 and c1 <= fc <= c2:
-            return self._val(ctx, fc, r1)
-        if c1 == c2 and r1 <= fr <= r2:
-            return self._val(ctx, c1, fr)
+        if c1 <= fc <= c2:
+            row = fr if r1 <= fr <= r2 else (r1 if fr < r1 else r2)
+            return self._val(ctx, fc, row)
+        if r1 <= fr <= r2:
+            col = fc if c1 <= fc <= c2 else (c1 if fc < c1 else c2)
+            return self._val(ctx, col, fr)
         return self._val(ctx, c1, r1)
 
     def __repr__(self):  # pragma: no cover

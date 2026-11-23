@@ -31,6 +31,15 @@ def lotus_to_date(serial: float) -> _dt.date:
     return _EPOCH_PRE + _dt.timedelta(days=n)
 
 
+def lotus_to_ymd(serial: float):
+    """(year, month, day) with the fictitious 1900-02-29 at serial 60."""
+    n = int(serial)
+    if n == 60:
+        return (1900, 2, 29)
+    d = lotus_to_date(serial)
+    return (d.year, d.month, d.day)
+
+
 def date_to_lotus(d: _dt.date) -> int:
     if d >= _dt.date(1900, 3, 1):
         return (d - _EPOCH_LEAP).days
@@ -127,14 +136,14 @@ def format_number(value: float, fmt: dict | None) -> str:
 
 def format_date(serial: float, style: str = "dd-mmm-yy") -> str:
     try:
-        d = lotus_to_date(serial)
+        year, month, day = lotus_to_ymd(serial)
     except (OverflowError, ValueError):
         return "ERR"
-    yy = f"{d.year % 100:02d}"
-    yyyy = f"{d.year:04d}"
-    dd = f"{d.day:02d}"
-    mmm = MONTHS3[d.month - 1]
-    mm = f"{d.month:02d}"
+    yy = f"{year % 100:02d}"
+    yyyy = f"{year:04d}"
+    dd = f"{day:02d}"
+    mmm = MONTHS3[month - 1]
+    mm = f"{month:02d}"
     if style == "dd-mmm-yy":
         return f"{dd}-{mmm}-{yy}"
     if style == "dd-mmm":

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import random
+import re
 
 from . import fmt as _fmt
 
@@ -526,13 +527,15 @@ def _index(args, ctx):
     c1, r1, c2, r2 = rng.corners
     row = int(to_num(args[1])) if len(args) > 1 and to_num(args[1]) != 0 else 0
     col = int(to_num(args[2])) if len(args) > 2 and to_num(args[2]) != 0 else 0
+    if row < 0 or col < 0 or row > r2 - r1 + 1 or col > c2 - c1 + 1:
+        return ERR
     if row == 0 and col == 0:
         return ctx.val(c1, r1)
     if row == 0:
-        return ctx.val(min(c1 + col - 1, c2), r1)
+        return ctx.val(c1 + col - 1, r1)
     if col == 0:
-        return ctx.val(c1, min(r1 + row - 1, r2))
-    return ctx.val(min(c1 + col - 1, c2), min(r1 + row - 1, r2))
+        return ctx.val(c1, r1 + row - 1)
+    return ctx.val(c1 + col - 1, r1 + row - 1)
 
 
 @func("CHOOSE")
@@ -668,6 +671,55 @@ def _trim(args, ctx):
     return " ".join(to_text(_scalar(args[0], ctx) if args else "").split())
 
 
+@func("FIND")
+def _find(args, ctx):
+    """@FIND(search, string[, start]): 1-based position, ERR if absent."""
+    if len(args) < 2:
+        return ERR
+    needle = to_text(_scalar(args[0], ctx))
+    hay = to_text(_scalar(args[1], ctx))
+    start = int(to_num(args[2])) if len(args) > 2 else 1
+    if start < 1:
+        return ERR
+    i = hay.find(needle, start - 1)
+    return float(i + 1) if i >= 0 else ERR
+
+
+@func("EXACT")
+def _exact(args, ctx):
+    if len(args) < 2:
+        return ERR
+    a = to_text(_scalar(args[0], ctx))
+    b = to_text(_scalar(args[1], ctx))
+    return 1.0 if a == b else 0.0
+
+
+@func("PROPER")
+def _proper(args, ctx):
+    s = to_text(_scalar(args[0], ctx)) if args else ""
+    return re.sub(r"[A-Za-z]+", lambda m: m.group(0).capitalize(), s)
+
+
+@func("CLEAN")
+def _clean(args, ctx):
+    s = to_text(_scalar(args[0], ctx)) if args else ""
+    return "".join(ch for ch in s if ord(ch) >= 32 or ch in "\t")
+
+
+@func("REPLACE")
+def _replace(args, ctx):
+    """@REPLACE(original, start, n, new): replace n chars at 1-based start."""
+    if len(args) < 4:
+        return ERR
+    s = to_text(_scalar(args[0], ctx))
+    start = int(to_num(args[1]))
+    n = int(to_num(args[2]))
+    new = to_text(_scalar(args[3], ctx))
+    if start < 1 or n < 0:
+        return ERR
+    return s[:start - 1] + new + s[start - 1 + n:]
+
+
 @func("REPEAT")
 def _repeat(args, ctx):
     s = to_text(_scalar(args[0], ctx)) if args else ""
@@ -702,6 +754,8 @@ def _date(args, ctx):
     d = int(to_num(args[2]))
     if y < 100:
         y += 1900
+    if (y, m, d) == (1900, 2, 29):
+        return 60.0    # the historical fictitious leap day, serial 60
     try:
         return float(_fmt.date_to_lotus(_dt.date(y, m, d)))
     except ValueError:
@@ -747,7 +801,7 @@ def _year(args, ctx):
     v = to_num(_scalar(args[0], ctx)) if args else ERR
     if isinstance(v, Error):
         return v
-    return float(_fmt.lotus_to_date(v).year)
+    return float(_fmt.lotus_to_ymd(v)[0])
 
 
 @func("MONTH")
@@ -755,7 +809,7 @@ def _month(args, ctx):
     v = to_num(_scalar(args[0], ctx)) if args else ERR
     if isinstance(v, Error):
         return v
-    return float(_fmt.lotus_to_date(v).month)
+    return float(_fmt.lotus_to_ymd(v)[1])
 
 
 @func("DAY")
@@ -763,7 +817,7 @@ def _day(args, ctx):
     v = to_num(_scalar(args[0], ctx)) if args else ERR
     if isinstance(v, Error):
         return v
-    return float(_fmt.lotus_to_date(v).day)
+    return float(_fmt.lotus_to_ymd(v)[2])
 
 
 @func("HOUR")
@@ -971,6 +1025,33 @@ def _cell_fn(args, ctx):
         f = cell.fmt if cell is not None else None
         return (f or {}).get("type", "general")
     return ERR
+
+
+@func("S")
+def _s_fn(args, ctx):
+    if not args:
+        return ERR
+    v = _scalar(args[0], ctx)
+    if isinstance(v, Error):
+        return v
+    return v if isinstance(v, str) else ""
+
+
+@func("N")
+def _n_fn(args, ctx):
+    if not args:
+        return ERR
+    v = _scalar(args[0], ctx)
+    if isinstance(v, Error):
+        return v
+    if v is None or isinstance(v, str):
+        return 0.0
+    return float(v)
+
+
+@func("CELLPOINTER")
+def _cellpointer_fn(args, ctx):
+    return _cell_fn(list(args), ctx)
 
 
 @func("COLS")

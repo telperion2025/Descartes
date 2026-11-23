@@ -8,6 +8,8 @@ this module stores the per-sheet part of that key.
 
 from __future__ import annotations
 
+import math as _math
+
 MAX_COLS = 256          # A..IV
 MAX_ROWS = 8192         # 1..8192
 DEFAULT_COL_WIDTH = 9
@@ -69,6 +71,8 @@ def parse_address(text: str) -> tuple[int, int]:
     row = int(s[i:]) - 1
     if not 0 <= row < MAX_ROWS:
         raise ValueError(f"row out of range: {text!r}")
+    if not 0 <= col < MAX_COLS:
+        raise ValueError(f"col out of range: {text!r}")
     return col, row
 
 
@@ -181,6 +185,8 @@ def parse_number_literal(text: str):
     try:
         v = float(s)
     except ValueError:
+        return None
+    if not _math.isfinite(v):
         return None
     if pct:
         v = v / 100.0

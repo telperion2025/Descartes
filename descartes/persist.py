@@ -7,7 +7,9 @@ deterministic key ordering (sheet, row, col) for clean diffs.
 
 WK1 record stream: {u16 opcode LE, u16 length LE, payload[length]}.
 Cell records: 0x000D INTEGER, 0x000E NUMBER, 0x000F LABEL, 0x0010 FORMULA
-(RPN tokens + cached result). WK3 files are read as "first sheet only".
+(RPN tokens + cached result). WK3 (Release 3.x) files are read with ALL
+sheets: repeated BOF..EOF blocks, tab-indexed cell records (0x14..0x19),
+sheet names (0x1B/14000) and range names (0x09 USERRANGE, 3-D aware).
 """
 
 from __future__ import annotations
@@ -272,7 +274,7 @@ def _rpn_to_infix(tokens: bytes, row: int, col: int):
 
 
 def read_wk1(path) -> dict:
-    """Import a WK1/WKS file (WK3 read as first sheet only) -> load_vg1-style dict."""
+    """Import a WK1/WKS file -> load_vg1-style dict (single sheet A)."""
     with open(path, "rb") as f:
         data = f.read()
     ws = Worksheet("A")
@@ -332,6 +334,308 @@ def read_wk1(path) -> dict:
         "print": {},
         "window": {},
     }
+
+
+def _snum16(h: int) -> float:
+    """Lotus 16-bit compressed float (WK3 SMALLNUMCELL / RPN snum token)."""
+    if not (h & 1):
+        return h / 2
+    mult = {0x1: 5000.0, 0x3: 500.0, 0x5: 0.05, 0x7: 0.005,
+            0x9: 0.0005, 0xB: 5e-5, 0xD: 1.0 / 16, 0xF: 1.0 / 64}
+    m = h & 0xF
+    if m not in mult:
+        return 0.0
+    return (h >> 4) * mult[m]
+
+
+def _x87_to_double(b: bytes) -> float:
+    """10-byte x87 extended float (WK3 RPN Const10Float token)."""
+    mant = int.from_bytes(b[0:8], "little")
+    se = int.from_bytes(b[8:10], "little")
+    sign = -1.0 if (se & 0x8000) else 1.0
+    exp = se & 0x7FFF
+    if exp == 0x7FFF:
+        return sign * float("inf")
+    if exp == 0:
+        return sign * mant * 2.0 ** (-16382 - 63)
+    return sign * mant * 2.0 ** (exp - 16383 - 63)
+
+
+def _rpn3_to_infix(tokens: bytes, row: int, col: int, tab: int, order: list):
+    """Translate a WK3 RPN token stream to 1-2-3 infix text (best effort).
+
+    WK3 opcodes 0x0F..0x1E are the WK1 operators shifted by +7; 0x1F.. are the
+    same function opcodes as WK1; 0x00 is a 10-byte x87 float, 0x01 a 16-bit
+    compressed number, 0x02/0x03 cell/range refs with a tab byte.
+    Returns (text, ok); on any unsupported token ok=False (caller uses the
+    cached result)."""
+    stack: list[str] = []
+    i = 0
+    n = len(tokens)
+
+    def sheet_name(t):
+        if 0 <= t < len(order):
+            return order[t]
+        return None
+
+    def addr(c, r, t):
+        sn = sheet_name(t)
+        a = format_address(c, r)
+        if sn is not None and t != tab:
+            return sn + "!" + a
+        return a
+
+    while i < n:
+        op = tokens[i]
+        if op == 0x00:
+            if i + 11 > n:
+                return "", False
+            stack.append(_fmt.general_number(_x87_to_double(tokens[i + 1:i + 11])))
+            i += 11
+        elif op == 0x01:
+            if i + 3 > n:
+                return "", False
+            (v,) = struct.unpack_from("<h", tokens, i + 1)
+            stack.append(_fmt.general_number(_snum16(v)))
+            i += 3
+        elif op == 0x02:
+            if i + 6 > n:
+                return "", False
+            rel, r, t, c = struct.unpack_from("<BHBB", tokens, i + 1)
+            stack.append(addr(c, r, t))
+            i += 6
+        elif op == 0x03:
+            if i + 10 > n:
+                return "", False
+            rel, r1, t1, c1, r2, t2, c2 = struct.unpack_from("<BHBBHBB", tokens, i + 1)
+            s1, s2 = sheet_name(t1), sheet_name(t2)
+            a = format_address(c1, r1)
+            b = format_address(c2, r2)
+            if s1 and s2 and t1 != t2:
+                stack.append(f"{s1}:{s2}!{a}..{b}")
+            elif s1 and t1 != tab:
+                stack.append(f"{s1}!{a}..{b}")
+            else:
+                stack.append(f"{a}..{b}")
+            i += 10
+        elif op in (0x04, 0x05):
+            j = tokens.find(b"\0", i + 1)
+            if j < 0:
+                return "", False
+            nm = tokens[i + 1:j].decode("cp437", "replace")
+            stack.append(nm.upper())
+            i = j + 1
+        elif op in (0x06, 0x07, 0x08):
+            stack.append("@ERR()")
+            i += {0x06: 5, 0x07: 6, 0x08: 11}[op]
+        elif op == 0x09:
+            return "", False
+        elif op == 0x0A:
+            break
+        elif op == 0x0B:
+            i += 1
+        elif op == 0x0C:
+            if i + 3 > n:
+                return "", False
+            (v,) = struct.unpack_from("<h", tokens, i + 1)
+            stack.append(str(v))
+            i += 3
+        elif op == 0x0D:
+            j = tokens.find(b"\0", i + 1)
+            if j < 0:
+                return "", False
+            s = tokens[i + 1:j].decode("cp437", "replace")
+            stack.append('"' + s.replace('"', '""') + '"')
+            i = j + 1
+        elif op == 0x0E:
+            i += 1
+        elif 0x0F <= op <= 0x1E:
+            wop = op - 7
+            if wop in _WK1_OPS:
+                kind, sym = _WK1_OPS[wop]
+                if kind == "bin":
+                    if len(stack) < 2:
+                        return "", False
+                    b = stack.pop()
+                    a = stack.pop()
+                    stack.append(f"({a}{sym}{b})")
+                else:
+                    if not stack:
+                        return "", False
+                    a = stack.pop()
+                    stack.append(f"({sym}{a})" if sym == "-" else f"(#NOT#{a})")
+                i += 1
+            else:
+                return "", False
+        elif op in _WK1_FUNCS:
+            name, nargs = _WK1_FUNCS[op]
+            if nargs >= 0:
+                if len(stack) < nargs:
+                    return "", False
+                args = [stack.pop() for _ in range(nargs)][::-1]
+            else:
+                if i + 1 >= n:
+                    return "", False
+                count = tokens[i + 1]
+                if len(stack) < count:
+                    return "", False
+                args = [stack.pop() for _ in range(count)][::-1]
+                i += 1
+            stack.append("@" + name + "(" + ",".join(args) + ")")
+            i += 1
+        else:
+            return "", False
+    if len(stack) != 1:
+        return "", False
+    return stack[0], True
+
+
+def read_wk3(path) -> dict:
+    """Import a WK3 (Lotus 1-2-3 Release 3.x) file: ALL sheets.
+
+    Structure (per the LibreOffice lotus filter): a sequence of sheet blocks,
+    each BOF (opcode 0x0000, version >= 0x1000, subtype 0x0004) ... EOF
+    (0x0001). Cell records carry a tab index: 0x14 ERR, 0x15 NA, 0x16 LABEL
+    (addr6 + prefix + cstring), 0x17 NUMBER (addr6 + double), 0x18 SMALLNUM
+    (addr6 + snum16), 0x19 FORMULA (addr6 + double + u16 len + WK3 RPN).
+    0x07 COLUMNWIDTH, 0x09 USERRANGE (names), 0x1B subtype 14000 = sheet name.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    sheets: dict[str, Worksheet] = {}
+    order: list[str] = []
+    names: dict = {}
+    recalc_mode = "auto"
+    cur = None
+
+    def ws_for_tab(t):
+        if 0 <= t < len(order):
+            return sheets[order[t]]
+        return cur
+
+    for opcode, payload in _wk1_records(data):
+        if opcode == 0x0000:
+            if len(payload) >= 4:
+                version, sub = struct.unpack_from("<HH", payload, 0)
+                if version >= 0x1000 and sub == 0x0004:
+                    name = col_letters(len(order))
+                    cur = Worksheet(name)
+                    sheets[name] = cur
+                    order.append(name)
+                elif not order:
+                    cur = Worksheet("A")
+                    sheets["A"] = cur
+                    order.append("A")
+            continue
+        if opcode == 0x0001:
+            cur = None
+            continue
+        if opcode == 0x0002:
+            raise ValueError("file is password protected")
+        if cur is None:
+            continue
+        if opcode == 0x0007 and len(payload) >= 4:
+            if not payload[1]:
+                off = 4
+                while off + 2 <= len(payload):
+                    col = payload[off]
+                    w = payload[off + 1]
+                    if w:
+                        cur.widths[col] = max(1, w)
+                    off += 2
+        elif opcode == 0x0009 and len(payload) >= 26:
+            raw_name = payload[2:18].split(b"\0")[0]
+            name = raw_name.decode("cp437", "replace").upper()
+            c1, r1, c2, r2 = struct.unpack_from("<HHHH", payload, 18)
+            entry = {"sheet": cur.name if cur is not None else order[0],
+                     "range": ((c1, r1), (c2, r2))}
+            if len(payload) >= 30:
+                t1, t2 = struct.unpack_from("<HH", payload, 26)
+                if 0 <= t1 < len(order) and 0 <= t2 < len(order):
+                    a, b = order[t1], order[t2]
+                    entry["sheet"] = a
+                    if a != b:
+                        entry["sheets"] = [a, b]
+            if name:
+                names[name] = entry
+        elif opcode in (0x0014, 0x0015) and len(payload) >= 6:
+            c, r, t = struct.unpack_from("<HHH", payload, 0)
+            ws = ws_for_tab(t) or cur
+            raw = "+@ERR()" if opcode == 0x0014 else "+@NA()"
+            ws.cells[(c, r)] = Cell(raw=raw, kind=FORMULA, value=None)
+        elif opcode == 0x0016 and len(payload) >= 7:
+            c, r, t = struct.unpack_from("<HHH", payload, 0)
+            prefix = chr(payload[6]) if payload[6:7] else "'"
+            text = payload[7:].split(b"\0")[0].decode("cp437", "replace")
+            ws = ws_for_tab(t) or cur
+            align = {"'": "left", "^": "center", '"': "right"}.get(prefix)
+            ws.cells[(c, r)] = Cell(raw=prefix + text, kind=LABEL, value=text,
+                                    align=align)
+        elif opcode == 0x0017 and len(payload) >= 14:
+            c, r, t = struct.unpack_from("<HHH", payload, 0)
+            (v,) = struct.unpack_from("<d", payload, 6)
+            ws = ws_for_tab(t) or cur
+            ws.cells[(c, r)] = Cell(raw=_fmt.general_number(v), kind=NUMBER,
+                                    value=float(v))
+        elif opcode == 0x0018 and len(payload) >= 8:
+            c, r, t = struct.unpack_from("<HHH", payload, 0)
+            (v,) = struct.unpack_from("<h", payload, 6)
+            val = _snum16(v)
+            ws = ws_for_tab(t) or cur
+            ws.cells[(c, r)] = Cell(raw=_fmt.general_number(val), kind=NUMBER,
+                                    value=val)
+        elif opcode == 0x0019 and len(payload) >= 16:
+            c, r, t = struct.unpack_from("<HHH", payload, 0)
+            (cached,) = struct.unpack_from("<d", payload, 6)
+            (flen,) = struct.unpack_from("<H", payload, 14)
+            tokens = payload[16:16 + flen]
+            ws = ws_for_tab(t) or cur
+            text, ok = _rpn3_to_infix(tokens, r, c, t, order)
+            if ok:
+                ws.cells[(c, r)] = Cell(raw="+" + text, kind=FORMULA, value=None)
+            else:
+                ws.cells[(c, r)] = Cell(raw=_fmt.general_number(cached),
+                                        kind=NUMBER, value=cached)
+        elif opcode == 0x001B and len(payload) > 4:
+            sub = struct.unpack_from("<H", payload, 0)[0]
+            if sub == 14000:
+                tab = struct.unpack_from("<H", payload, 2)[0]
+                nm = payload[4:].split(b"\0")[0].decode("cp437", "replace").upper()
+                if 0 <= tab < len(order) and nm and nm not in sheets:
+                    old = order[tab]
+                    ws = sheets.pop(old)
+                    ws.name = nm
+                    sheets[nm] = ws
+                    order[tab] = nm
+                    for e in names.values():
+                        if e.get("sheet") == old:
+                            e["sheet"] = nm
+                        if "sheets" in e and old in e["sheets"]:
+                            e["sheets"] = [nm if s == old else s for s in e["sheets"]]
+    return {
+        "sheets": sheets,
+        "names": names,
+        "recalc_mode": recalc_mode,
+        "iterations": 0,
+        "cursor": (0, 0),
+        "active": order[0] if order else None,
+        "graphs": [],
+        "print": {},
+        "window": {},
+    }
+
+
+def read_lotus(path) -> dict:
+    """WK1/WKS or WK3, chosen by the first BOF version word."""
+    with open(path, "rb") as f:
+        head = f.read(6)
+    if len(head) >= 6:
+        opcode, length = struct.unpack_from("<HH", head, 0)
+        if opcode == 0x0000 and length >= 4:
+            (version,) = struct.unpack_from("<H", head, 4)
+            if version >= 0x1000:
+                return read_wk3(path)
+    return read_wk1(path)
 
 
 def _infix_to_rpn(ast, row: int, col: int) -> bytes | None:
@@ -422,11 +726,14 @@ def write_wk1(path, sheet: Worksheet, engine: Engine | None = None):
         elif cell.kind == FORMULA:
             comp = engine.formulas.get((c, r)) if engine is not None else None
             tokens = _infix_to_rpn(comp.ast, r, c) if comp is not None else None
-            if tokens is None:
+            if tokens is None and comp is None:
                 try:
-                    tokens = _infix_to_rpn(parse("+@ERR()"), r, c)
+                    parse(cell.raw)
                 except FormulaSyntaxError:
-                    tokens = None
+                    try:
+                        tokens = _infix_to_rpn(parse("+@ERR()"), r, c)
+                    except FormulaSyntaxError:
+                        tokens = None
             value = cell.value if isinstance(cell.value, (int, float)) \
                 and not isinstance(cell.value, bool) else 0.0
             if tokens is None:
@@ -493,7 +800,7 @@ def read_dif(path) -> Worksheet:
             if i + 1 < n:
                 s = lines[i + 1].strip()
                 if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
-                    s = s[1:-1]
+                    s = s[1:-1].replace('""', '"')
                 ws.set_entry(col, row, "'" + s)
                 i += 2
                 col += 1
@@ -560,13 +867,16 @@ def read_text_import(path, numbers_only=False) -> Worksheet:
             if not field:
                 col += 1
                 continue
-            if len(field) >= 2 and field.startswith('"') and field.endswith('"'):
-                ws.set_entry(col, row, "'" + field[1:-1].replace('""', '"'))
-            elif numbers_only:
+            if numbers_only:
                 try:
-                    ws.set_entry(col, row, _fmt.general_number(float(field.rstrip("%"))))
+                    v = float(field[:-1] if field.endswith("%") else field)
+                    if field.endswith("%"):
+                        v /= 100.0
+                    ws.set_entry(col, row, _fmt.general_number(v))
                 except ValueError:
                     pass
+            elif len(field) >= 2 and field.startswith('"') and field.endswith('"'):
+                ws.set_entry(col, row, "'" + field[1:-1].replace('""', '"'))
             elif parse_number_literal(field) is not None:
                 ws.set_entry(col, row, field)
             else:
@@ -617,17 +927,17 @@ def import_file(path) -> dict:
     if lower.endswith(".vg1"):
         return load_vg1(path)
     if lower.endswith((".wk1", ".wks", ".123", ".wk3")):
-        return read_wk1(path)
+        return read_lotus(path)
     if lower.endswith(".dif"):
         return {"sheets": {"A": read_dif(path)}, "names": {}, "recalc_mode": "auto",
                 "iterations": 0, "cursor": (0, 0), "graphs": [], "print": {}, "window": {}}
     if lower.endswith((".txt", ".csv", ".prn")):
         return {"sheets": {"A": read_text_import(path)}, "names": {}, "recalc_mode": "auto",
                 "iterations": 0, "cursor": (0, 0), "graphs": [], "print": {}, "window": {}}
-    # sniff: WK1 starts with 00 00 (BOF opcode)
+    # sniff: Lotus files start with 00 00 (BOF opcode)
     with open(path, "rb") as f:
         head = f.read(4)
     if head[:2] == b"\x00\x00":
-        return read_wk1(path)
+        return read_lotus(path)
     return {"sheets": {"A": read_text_import(path)}, "names": {}, "recalc_mode": "auto",
             "iterations": 0, "cursor": (0, 0), "graphs": [], "print": {}, "window": {}}

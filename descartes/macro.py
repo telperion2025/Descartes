@@ -8,16 +8,20 @@ Tokens: `{COMMAND args}` for commands, `{KEYNAME}` for special keys, and bare
 text between commands is sent to the app as keystrokes (so macros drive the real
 UI: typing `12{ENTER}` enters 12 into the current cell).
 
-Commands: GOTO, LET, BEEP, RECALC, WAIT, SYSTEM, BRANCH, CALL, RETURN, HALT,
-QUIT, IF / ELSE / END, LOOK (no-op). Unknown commands halt with an error.
+Commands: GOTO, LET/PUT, BEEP, RECALC, WAIT, SYSTEM, BRANCH, CALL, RETURN,
+HALT, QUIT, IF / ELSE / END, LOOK (no-op), INPUT (needs /RANGE INPUT),
+GETNUMBER / GETLABEL (prompt + store into a cell), MENUBRANCH (feed a cell's
+text as menu keystrokes), DEFINE (create a range name, 3-D aware). Unknown
+commands halt with an error.
 """
 
 from __future__ import annotations
 
 import time
 
+from . import fmt as _fmt
 from .engine import Ctx, compile_node, parse
-from .grid import parse_address
+from .grid import is_valid_name, parse_address, split_range_any
 from .keys import KeyEvent
 
 KEY_NAMES = {"LEFT", "RIGHT", "UP", "DOWN", "HOME", "ENDKEY", "PGUP", "PGDN",
@@ -26,7 +30,9 @@ KEY_NAMES = {"LEFT", "RIGHT", "UP", "DOWN", "HOME", "ENDKEY", "PGUP", "PGDN",
 KEY_ALIASES = {"ENDKEY": "END"}
 
 COMMANDS = {"GOTO", "LET", "PUT", "BEEP", "RECALC", "WAIT", "SYSTEM", "BRANCH",
-            "CALL", "RETURN", "HALT", "QUIT", "IF", "ELSE", "END", "LOOK"}
+            "CALL", "RETURN", "HALT", "QUIT", "IF", "ELSE", "END", "LOOK",
+            "INPUT", "GETNUMBER", "GETLABEL", "MENUBRANCH", "DEFINE",
+            "FOR", "FOREND", "FORBREAK"}
 
 
 class MacroError(Exception):
@@ -49,10 +55,18 @@ def tokenize_macro(text: str):
             j = text.find("}", i + 1)
             if j < 0:
                 raise MacroError("unterminated { in macro")
-            flush()
             inner = text[i + 1:j].strip()
             head = inner.split(None, 1)
             name = (head[0] if head else "").upper()
+            if name == "{":
+                buf.append("{")
+                i = j + 1
+                continue
+            if name == "}":
+                buf.append("}")
+                i = j + 1
+                continue
+            flush()
             args = head[1] if len(head) > 1 else ""
             if name in COMMANDS:
                 toks.append(("cmd", name, args))
@@ -125,12 +139,46 @@ def _find_end(toks, start):
     raise MacroError("ELSE without END")
 
 
+def _find_for_end(toks, start):
+    """Index of the FOREND matching the FOR at `start` (nesting-aware)."""
+    depth = 0
+    for i in range(start, len(toks)):
+        t = toks[i]
+        if t[0] == "cmd" and t[1] == "FOR":
+            depth += 1
+        elif t[0] == "cmd" and t[1] == "FOREND":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise MacroError("FOR without FOREND")
+
+
 class MacroRunner:
     def __init__(self, app, max_steps=10000, max_depth=16):
         self.app = app
         self.max_steps = max_steps
         self.max_depth = max_depth
         self.steps = 0
+        self.stack = []
+        self.suspended = None
+        self._for_stack = []
+
+    def resume(self):
+        """Continue a macro suspended by {INPUT}/{GETNUMBER}/{GETLABEL}."""
+        if not self.suspended:
+            return
+        toks, pc, fkey, stop = self.suspended
+        self.suspended = None
+        try:
+            self._exec(toks, pc, fkey, stop)
+            while self._for_stack and not self.suspended:
+                self._for_step()
+        except MacroError:
+            raise
+        except RecursionError:
+            raise MacroError("macro recursion too deep")
+        except Exception as e:
+            raise MacroError(str(e))
 
     def _tick(self):
         self.steps += 1
@@ -142,15 +190,22 @@ class MacroRunner:
         if raw is None or not raw.startswith("{"):
             raise MacroError(f"{key} is not a macro cell")
         self.stack = []
+        self.suspended = None
+        self._for_stack = []
         try:
             self._exec(tokenize_macro(raw), 0, key)
+        except MacroError:
+            raise
         except RecursionError:
             raise MacroError("macro recursion too deep")
+        except Exception as e:
+            raise MacroError(str(e))
 
-    def _exec(self, toks, start, fkey):
+    def _exec(self, toks, start, fkey, stop=None):
         pc = start
-        while pc < len(toks):
-            if not getattr(self.app, "running", True):
+        end = len(toks) if stop is None else stop
+        while pc < end:
+            if not getattr(self.app, "running", True) or self.suspended:
                 break
             self._tick()
             t = toks[pc]
@@ -172,11 +227,62 @@ class MacroRunner:
                 toks = tokenize_macro(raw)
                 fkey = (c, r)
                 pc = 0
+                stop = None
+                end = len(toks)
+            elif t[0] == "cmd" and t[1] == "FOR":
+                pc = self._do_for(toks, pc, fkey, stop)
+                end = len(toks) if stop is None else stop
             elif t[0] == "cmd":
                 _, name, args = t
-                pc = self._cmd(toks, pc, name, args, fkey)
+                pc = self._cmd(toks, pc, name, args, fkey, stop)
             else:
                 pc += 1
+
+    def _let(self, c, r, v):
+        app = self.app
+        app.sheet.set_entry(c, r, _fmt.general_number(float(v)))
+        app.engine.note_edit((c, r))
+        app._touch(app.active, (c, r))
+        app._recalc()
+
+    def _do_for(self, toks, pc, fkey, stop):
+        a = split_args(toks[pc][2])
+        if len(a) not in (3, 4):
+            raise MacroError("{FOR} needs counter, start, end[, step]")
+        cc, cr = parse_address(a[0])
+        try:
+            start = float(a[1])
+            end = float(a[2])
+            step = float(a[3]) if len(a) == 4 else 1.0
+        except ValueError:
+            raise MacroError("{FOR} needs numeric start, end[, step]")
+        if step == 0:
+            raise MacroError("{FOR} step must not be 0")
+        fend = _find_for_end(toks, pc)
+        self._for_stack.append({"toks": toks, "pc": pc, "fkey": fkey, "stop": stop,
+                                "fend": fend, "step": step, "end": end,
+                                "cell": (cc, cr), "v": start, "done": False})
+        return self._for_step()
+
+    def _for_step(self):
+        st = self._for_stack[-1]
+        toks, fkey, fend = st["toks"], st["fkey"], st["fend"]
+        step, end, cell = st["step"], st["end"], st["cell"]
+        v = st["v"]
+        if st.get("pending"):
+            v += step
+            st["pending"] = False
+        while not st["done"] and ((step > 0 and v <= end) or (step < 0 and v >= end)):
+            self._let(cell[0], cell[1], v)
+            self._exec(toks, st["pc"] + 1, fkey, stop=fend)
+            if self.suspended:
+                st["v"] = v
+                st["pending"] = True
+                return len(toks)
+            v += step
+            st["v"] = v
+        self._for_stack.pop()
+        return fend + 1
 
     def _eval_cond(self, expr, fkey):
         from .functions import Error
@@ -184,8 +290,8 @@ class MacroRunner:
             v = compile_node(parse(expr))(Ctx(self.app.engine, fkey))
         except Exception as e:
             raise MacroError(f"bad IF expression {expr!r}: {e}")
-        from .engine import RangeValue
-        if isinstance(v, RangeValue):
+        from .engine import Range3D, RangeValue
+        if isinstance(v, (RangeValue, Range3D)):
             v = v.scalar(Ctx(self.app.engine, fkey))
         if isinstance(v, Error):
             raise MacroError(f"IF expression errored: {expr!r}")
@@ -193,7 +299,7 @@ class MacroRunner:
             return v != ""
         return bool(v)
 
-    def _cmd(self, toks, pc, name, args, fkey):
+    def _cmd(self, toks, pc, name, args, fkey, stop=None):
         app = self.app
         if name == "GOTO":
             c, r = parse_address(args)
@@ -229,6 +335,49 @@ class MacroRunner:
             return pc + 1
         if name == "LOOK":
             return pc + 1
+        if name == "INPUT":
+            rng = getattr(app, "input_range", None)
+            if rng is None:
+                raise MacroError("{INPUT} requires /RANGE INPUT first")
+            app.move(*rng[0])
+            app.begin_macro_wait("input", "Enter data:", None, self)
+            self.suspended = (toks, pc + 1, fkey, stop)
+            return len(toks)
+        if name in ("GETNUMBER", "GETLABEL"):
+            a = split_args(args)
+            if len(a) != 2:
+                raise MacroError(f"{{{name}}} needs \"prompt\", cell")
+            prompt = a[0].strip()
+            if len(prompt) >= 2 and prompt.startswith('"') and prompt.endswith('"'):
+                prompt = prompt[1:-1]
+            c, r = parse_address(a[1])
+            app.begin_macro_wait("number" if name == "GETNUMBER" else "text",
+                                 prompt, (c, r), self)
+            self.suspended = (toks, pc + 1, fkey, stop)
+            return len(toks)
+        if name == "MENUBRANCH":
+            c, r = parse_address(args)
+            raw = app.sheet.raw_at(c, r)
+            if raw is None:
+                raise MacroError(f"MENUBRANCH target {args} is empty")
+            text = raw[1:] if raw.startswith("'") else raw
+            for ch in text:
+                app.handle(KeyEvent("char", ch=ch))
+            return pc + 1
+        if name == "DEFINE":
+            if ":" not in args:
+                raise MacroError("{DEFINE} needs name:range")
+            nm, rngtxt = args.split(":", 1)
+            nm = nm.strip().upper()
+            if not is_valid_name(nm):
+                raise MacroError(f"bad range name {nm!r}")
+            sheets, c1, c2 = split_range_any(rngtxt)
+            entry = {"sheet": sheets[0] if sheets else app.active, "range": (c1, c2)}
+            if sheets and sheets[0] != sheets[1]:
+                entry["sheets"] = [sheets[0], sheets[1]]
+            app.names[nm] = entry
+            app._rebuild_xdeps()
+            return pc + 1
         if name == "CALL":
             if len(self.stack) >= self.max_depth:
                 raise MacroError("macro CALL depth limit")
@@ -236,14 +385,21 @@ class MacroRunner:
             raw = app.sheet.raw_at(c, r)
             if raw is None or not raw.startswith("{"):
                 raise MacroError(f"CALL target {args} is not a macro")
-            self.stack.append((toks, pc + 1, fkey))
+            self.stack.append((toks, pc + 1, fkey, stop))
             self._exec(tokenize_macro(raw), 0, (c, r))
             return len(toks)
         if name == "RETURN":
             if self.stack:
-                toks2, pc2, fkey2 = self.stack.pop()
-                self._exec(toks2, pc2, fkey2)
+                toks2, pc2, fkey2, stop2 = self.stack.pop()
+                self._exec(toks2, pc2, fkey2, stop2)
             return len(toks)
+        if name == "FOREND":
+            return pc + 1
+        if name == "FORBREAK":
+            if self._for_stack:
+                self._for_stack[-1]["done"] = True
+                return self._for_stack[-1]["fend"] + 1
+            return pc + 1
         if name in ("HALT", "QUIT"):
             if name == "QUIT":
                 app.quit()
