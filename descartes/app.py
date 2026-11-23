@@ -235,7 +235,7 @@ class App:
         order = list(self.sheet_order)
         for sn, ws in self.sheets.items():
             for key, cell in list(ws.cells.items()):
-                if cell.kind == FORMULA and cell.raw:
+                if cell.kind == FORMULA and cell.raw and "!" in cell.raw:
                     try:
                         ast = parse(cell.raw)
                     except FormulaSyntaxError:
@@ -795,6 +795,8 @@ class App:
             runner.run_cell((c1, r1))
         except _macro.MacroError as e:
             self.error_msg(f"Macro: {e}")
+        except Exception as e:
+            self.error_msg(f"Macro: {e}")
         self._recalc(force=True)
         return True
 
@@ -838,6 +840,8 @@ class App:
         try:
             mw["runner"].resume()
         except _macro.MacroError as e:
+            self.error_msg(f"Macro: {e}")
+        except Exception as e:
             self.error_msg(f"Macro: {e}")
         self._recalc(force=True)
 

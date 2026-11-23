@@ -239,3 +239,26 @@ class TestForLoop:
         app.sheet.set_entry(3, 0, "{FOR A1, 1, 2}{LET B1, 1}")
         with pytest.raises(MacroError):
             MacroRunner(app).run_cell((3, 0))
+
+
+class TestReviewFixes:
+    def test_literal_braces(self):
+        toks = tokenize_macro("{{}x{}}")
+        assert "".join(t[1] for t in toks if t[0] == "keys") == "{x}"
+
+    def test_bad_address_in_macro_reports_error_not_crash(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "{GOTO 9zz}")
+        app.names["M"] = {"sheet": "A", "range": ((0, 0), (0, 0))}
+        app.handle(KeyEvent("char", ch="m", name="ALT+m"))
+        assert app.error.startswith("Macro:")
+        assert app.running
+
+    def test_if_with_3d_name_cond(self, make_app):
+        app, win = make_app()
+        app.cmd_insert_sheet()
+        app.sheets["B"].set_entry(0, 0, "5")
+        app.names["TOT"] = {"sheet": "B", "range": ((0, 0), (0, 0))}
+        app.sheet.set_entry(3, 0, "{IF TOT=5}{LET A1, 1}{ELSE}{LET A1, 2}{END}")
+        MacroRunner(app).run_cell((3, 0))
+        assert app.sheet.value_at(0, 0) == 1.0

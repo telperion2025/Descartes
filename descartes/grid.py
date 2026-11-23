@@ -69,6 +69,8 @@ def parse_address(text: str) -> tuple[int, int]:
     row = int(s[i:]) - 1
     if not 0 <= row < MAX_ROWS:
         raise ValueError(f"row out of range: {text!r}")
+    if not 0 <= col < MAX_COLS:
+        raise ValueError(f"col out of range: {text!r}")
     return col, row
 
 

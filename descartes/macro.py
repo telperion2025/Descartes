@@ -55,10 +55,18 @@ def tokenize_macro(text: str):
             j = text.find("}", i + 1)
             if j < 0:
                 raise MacroError("unterminated { in macro")
-            flush()
             inner = text[i + 1:j].strip()
             head = inner.split(None, 1)
             name = (head[0] if head else "").upper()
+            if name == "{":
+                buf.append("{")
+                i = j + 1
+                continue
+            if name == "}":
+                buf.append("}")
+                i = j + 1
+                continue
+            flush()
             args = head[1] if len(head) > 1 else ""
             if name in COMMANDS:
                 toks.append(("cmd", name, args))
@@ -165,8 +173,12 @@ class MacroRunner:
             self._exec(toks, pc, fkey, stop)
             while self._for_stack and not self.suspended:
                 self._for_step()
+        except MacroError:
+            raise
         except RecursionError:
             raise MacroError("macro recursion too deep")
+        except Exception as e:
+            raise MacroError(str(e))
 
     def _tick(self):
         self.steps += 1
@@ -182,8 +194,12 @@ class MacroRunner:
         self._for_stack = []
         try:
             self._exec(tokenize_macro(raw), 0, key)
+        except MacroError:
+            raise
         except RecursionError:
             raise MacroError("macro recursion too deep")
+        except Exception as e:
+            raise MacroError(str(e))
 
     def _exec(self, toks, start, fkey, stop=None):
         pc = start
@@ -211,6 +227,7 @@ class MacroRunner:
                 toks = tokenize_macro(raw)
                 fkey = (c, r)
                 pc = 0
+                stop = None
                 end = len(toks)
             elif t[0] == "cmd" and t[1] == "FOR":
                 pc = self._do_for(toks, pc, fkey, stop)
@@ -273,8 +290,8 @@ class MacroRunner:
             v = compile_node(parse(expr))(Ctx(self.app.engine, fkey))
         except Exception as e:
             raise MacroError(f"bad IF expression {expr!r}: {e}")
-        from .engine import RangeValue
-        if isinstance(v, RangeValue):
+        from .engine import Range3D, RangeValue
+        if isinstance(v, (RangeValue, Range3D)):
             v = v.scalar(Ctx(self.app.engine, fkey))
         if isinstance(v, Error):
             raise MacroError(f"IF expression errored: {expr!r}")

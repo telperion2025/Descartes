@@ -358,3 +358,18 @@ class TestWk1Export:
         app.cmd_xtract(str(p), split_range("A1..A1"), "WK1")
         data = _persist.read_wk1(str(p))
         assert data["sheets"]["A"].value_at(0, 0) == 7.0
+
+
+class TestReviewFixes:
+    def test_parse_address_rejects_huge_column(self):
+        from descartes.grid import parse_address
+        with pytest.raises(ValueError):
+            parse_address("ZZ1")
+
+    def test_wk3_ignores_fm3_bof_after_eof(self, tmp_path):
+        p = tmp_path / "book.wk3"
+        fm3_bof = _struct.pack("<HH", 0x0000, 4) + _struct.pack("<HH", 0x8007, 0x0000)
+        p.write_bytes(_bof3() + _number3(0, 0, 0, 1.0) + _eof() + fm3_bof + _eof())
+        data = _persist.import_file(str(p))
+        assert list(data["sheets"]) == ["A"]
+        assert data["sheets"]["A"].value_at(0, 0) == 1.0

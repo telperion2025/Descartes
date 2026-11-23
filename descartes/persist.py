@@ -522,7 +522,7 @@ def read_wk3(path) -> dict:
                     cur = Worksheet(name)
                     sheets[name] = cur
                     order.append(name)
-                elif cur is None:
+                elif not order:
                     cur = Worksheet("A")
                     sheets["A"] = cur
                     order.append("A")
@@ -547,7 +547,8 @@ def read_wk3(path) -> dict:
             raw_name = payload[2:18].split(b"\0")[0]
             name = raw_name.decode("cp437", "replace").upper()
             c1, r1, c2, r2 = struct.unpack_from("<HHHH", payload, 18)
-            entry = {"sheet": order[0], "range": ((c1, r1), (c2, r2))}
+            entry = {"sheet": cur.name if cur is not None else order[0],
+                     "range": ((c1, r1), (c2, r2))}
             if len(payload) >= 30:
                 t1, t2 = struct.unpack_from("<HH", payload, 26)
                 if 0 <= t1 < len(order) and 0 <= t2 < len(order):
