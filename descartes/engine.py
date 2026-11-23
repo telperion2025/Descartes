@@ -66,7 +66,13 @@ def tokenize(s: str) -> list[Token]:
         if ch == '"':
             j = i + 1
             buf = []
-            while j < n and s[j] != '"':
+            while j < n:
+                if s[j] == '"':
+                    if j + 1 < n and s[j + 1] == '"':
+                        buf.append('"')
+                        j += 2
+                        continue
+                    break
                 buf.append(s[j])
                 j += 1
             if j >= n:

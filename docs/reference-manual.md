@@ -114,19 +114,23 @@ Numeric/statistical: `@SUM @AVG @COUNT @MAX @MIN @STD @VAR @SQRT @ROUND @INT @AB
 @LN @LOG(x[,base]) @PI @SIN @COS @TAN @ASIN @ACOS @ATAN @MOD @RAND`
 
 Logic/lookup: `@IF @HLOOKUP @VLOOKUP @INDEX @CHOOSE @ISERR @ISNA @ISNUMBER @ISSTRING @ERR
-@NA`
+@NA @S @N`
 
 String/date: `@LENGTH @STRING @VALUE @LEFT @RIGHT @MID @UPPER @LOWER @TRIM @REPEAT @CHAR
-@CODE @DATE @DATEVALUE @NOW @TIME @YEAR @MONTH @DAY @TODAY` (plus `@HOUR @MINUTE @SECOND
-@COLS @ROWS`)
+@CODE @FIND @EXACT @PROPER @CLEAN @REPLACE @DATE @DATEVALUE @NOW @TIME @YEAR @MONTH @DAY
+@TODAY` (plus `@HOUR @MINUTE @SECOND @COLS @ROWS @CELL @CELLPOINTER`)
 
 Financial: `@FV @PV @NPV @IRR @TERM @RATE @PAYMENT`
 
 Semantics notes: `@STD`/`@VAR` are sample statistics (n-1); `@HLOOKUP`/`@VLOOKUP` use
-1-2-3 approximate matching on a sorted key row/column (exact match wins); ranges inside
+1-2-3 approximate matching on a sorted key row/column (exact match wins); `@INDEX`
+returns ERR when the row/column argument is out of range; ranges inside
 statistical functions ignore text/blank cells; `@DATE(y,m,d)` maps years < 100 to
 19yy; date serials use the Lotus epoch (serial 1 = 1900-01-01, with the historical
-fictitious 1900-02-29 at serial 60, so 1900-03-01 = 61).
+fictitious 1900-02-29 at serial 60, so 1900-03-01 = 61) — serial 60 also *displays* as
+29-Feb-1900 and `@YEAR/@MONTH/@DAY(60)` return 1900/2/29. `@S` returns the label text
+of a cell ("" for numbers), `@N` the number (0 for labels); `@CELLPOINTER` is
+`@CELL` on the cell containing the formula.
 
 The 1-2-3 **sort order** for `/DATA SORT` and `/FIND` is distinct from general text
 comparison: numbers first, then text as digits `0-9` < `A-Z` < `a-z` (implemented as

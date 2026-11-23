@@ -323,7 +323,7 @@ def data_table_2var(sheet, engine, input_cell_row, input_cell_col, formula_cell,
     (fc, fr) = formula_cell
     col_vals = [sheet.value_at(c, r1) for c in range(c1 + 1, c2 + 1)]
     for ci, cv in enumerate(col_vals):
-        sheet.set_entry(input_cell_col, input_cell_col[1], repr(cv) if cv is not None else "0")
+        sheet.set_entry(input_cell_col[0], input_cell_col[1], repr(cv) if cv is not None else "0")
         engine.note_edit(input_cell_col)
         for ri in range(r1 + 1, r2 + 1):
             rv = sheet.value_at(c1, ri)

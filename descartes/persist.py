@@ -800,7 +800,7 @@ def read_dif(path) -> Worksheet:
             if i + 1 < n:
                 s = lines[i + 1].strip()
                 if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
-                    s = s[1:-1]
+                    s = s[1:-1].replace('""', '"')
                 ws.set_entry(col, row, "'" + s)
                 i += 2
                 col += 1
@@ -867,13 +867,16 @@ def read_text_import(path, numbers_only=False) -> Worksheet:
             if not field:
                 col += 1
                 continue
-            if len(field) >= 2 and field.startswith('"') and field.endswith('"'):
-                ws.set_entry(col, row, "'" + field[1:-1].replace('""', '"'))
-            elif numbers_only:
+            if numbers_only:
                 try:
-                    ws.set_entry(col, row, _fmt.general_number(float(field.rstrip("%"))))
+                    v = float(field[:-1] if field.endswith("%") else field)
+                    if field.endswith("%"):
+                        v /= 100.0
+                    ws.set_entry(col, row, _fmt.general_number(v))
                 except ValueError:
                     pass
+            elif len(field) >= 2 and field.startswith('"') and field.endswith('"'):
+                ws.set_entry(col, row, "'" + field[1:-1].replace('""', '"'))
             elif parse_number_literal(field) is not None:
                 ws.set_entry(col, row, field)
             else:
