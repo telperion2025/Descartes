@@ -96,6 +96,12 @@ pure logic and is unit-tested without a terminal (fake-curses harness drives the
   function aggregates over all sheets in the span (`@SUM(A:C!A1..B2)`); in scalar
   context it resolves to the active sheet if it is in the span, else the span's first
   sheet. Copy/shift keeps the sheet span; insert/delete adjusts the cell corners.
+- Range names (created with `/RANGE NAME CREATE`) are usable directly in formulas:
+  `+@SUM(TOTAL)`, `+TOTAL*2`. Names are 1-15 chars, letter/underscore start, and must
+  not look like a cell address (`A1`) or sheet-qualified ref (`A!A1`). Names may target
+  another sheet (`B!A1..B2`) or a 3-D span (`A:C!A1..B2`); an unknown name evaluates to
+  ERR. Names are not shifted by /COPY and edits inside a named range propagate to
+  formulas using it.
 - A range used in a scalar context resolves by implicit intersection with the formula
   cell (single-row/single-column ranges intersect by column/row); otherwise the first
   cell of the range is used.
@@ -209,7 +215,8 @@ becomes `@ERR()` (`engine.adjust_refs`).
 /RANGE
   FORMAT (range, then choice FIXED/SCIENTIFIC/CURRENCY/PERCENT/COMMA/GENERAL/TEXT/DATE/TIME/HIDDEN)
   ERASE (range) | JUSTIFY (range) | LABEL (range, LEFT/CENTER/RIGHT)
-  NAME  CREATE (name, range) | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM) | RESET | TABLE
+  NAME  CREATE (name, range; range may be sheet-qualified `B!A1..B2` or 3-D `A:C!A1..B2`)
+        | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM) | RESET | TABLE
   PROTECT | UNPROTECT (range) | INPUT (range)
   TRANSPOSE (range, dest cell) | VALUE (range, dest cell) | SEARCH (range, text)
 /COPY | /MOVE                  (source range, dest anchor/range; tiling on multiples)

@@ -80,6 +80,7 @@ Full syntax and the complete `@function` list are in the
 @VLOOKUP(A1,PriceList,2)
 @DATE(2024,1,1)
 @SUM(A:C!A1..A10)     <- 3-D: sums A1..A10 on every sheet from A through C
+@SUM(TOTAL)           <- named range (created with /RANGE NAME CREATE)
 +"Total: "&@STRING(@SUM(A1..A10),2)
 ```
 

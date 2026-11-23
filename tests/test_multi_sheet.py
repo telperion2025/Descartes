@@ -163,3 +163,108 @@ class TestMultiSheetPersistence:
         assert app2.sheets["B"].value_at(0, 0) == 10.0
         assert app2.sheets["B"].value_at(1, 0) == "hello"
         assert app2.sheets["B"].raw_at(0, 0) == "+A!A1*10"
+
+
+class TestRangeNamesInFormulas:
+    def test_parse_serialize_name(self):
+        from descartes.engine import parse, serialize
+        assert serialize(parse("+TOTAL*2")) == "(TOTAL*2)"
+        assert serialize(parse("+@SUM(ALL3D)")) == "@SUM(ALL3D)"
+
+    def test_name_not_shifted_on_copy(self):
+        assert shift_raw("+@SUM(TOTAL)+A1", 1, 1) == "+@SUM(TOTAL)+B2"
+
+    def test_name_validation(self):
+        from descartes.grid import is_valid_name
+        assert is_valid_name("TOTAL")
+        assert is_valid_name("Q_1")
+        assert not is_valid_name("A1")
+        assert not is_valid_name("IV8192")
+        assert not is_valid_name("A!A1")
+        assert not is_valid_name("1X")
+        assert not is_valid_name("")
+
+    def test_unknown_name_is_err(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "+NOSUCHNAME")
+        app._register_all()
+        app._recalc(force=True)
+        assert getattr(app.sheet.value_at(0, 0), "_is_lotus_error", False)
+
+    def test_sum_over_2d_name_same_sheet(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "1")
+        app.sheet.set_entry(0, 1, "2")
+        app.cmd_name_create("TOTAL", "A1..A2")
+        app.sheet.set_entry(1, 0, "+@SUM(TOTAL)")
+        app._register_all()
+        app._recalc(force=True)
+        assert app.sheets["A"].value_at(1, 0) == 3.0
+
+    def test_name_edit_propagates(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "1")
+        app.sheet.set_entry(0, 1, "2")
+        app.cmd_name_create("TOTAL", "A1..A2")
+        app.sheet.set_entry(1, 0, "+@SUM(TOTAL)")
+        app._register_all()
+        app._recalc(force=True)
+        app.sheet.set_entry(0, 1, "5")
+        app._touch("A", (0, 1))
+        app._recalc()
+        assert app.sheets["A"].value_at(1, 0) == 6.0
+
+    def test_cross_sheet_name(self, make_app):
+        app, win = make_app()
+        app.cmd_insert_sheet()          # B
+        app.sheets["B"].set_entry(0, 0, "10")
+        app.sheets["B"].set_entry(0, 1, "20")
+        app.cmd_name_create("BVALS", "B!A1..A2")
+        app.active = "A"
+        app.sheet.set_entry(0, 0, "+@SUM(BVALS)")
+        app._register_all()
+        app._recalc(force=True)
+        assert app.sheets["A"].value_at(0, 0) == 30.0
+
+    def test_3d_name_sum(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "1")
+        app.cmd_insert_sheet()
+        app.cmd_insert_sheet()
+        app.sheets["B"].set_entry(0, 0, "10")
+        app.sheets["C"].set_entry(0, 0, "100")
+        app.cmd_name_create("ALL3D", "A:C!A1..A1")
+        app.active = "B"
+        app.sheet.set_entry(1, 0, "+@SUM(ALL3D)")
+        app._register_all()
+        app._recalc(force=True)
+        assert app.sheets["B"].value_at(1, 0) == 111.0
+
+    def test_name_create_rejects_cell_like(self, make_app):
+        app, win = make_app()
+        app.cmd_name_create("A1", "A1..A2")
+        assert app.error != ""
+        assert "A1" not in app.names
+
+    def test_prompt_accepts_3d_range_text(self, make_app):
+        app, win = make_app()
+        from descartes.app import Prompt
+        p = Prompt([{"text": "r", "kind": "range"}], lambda a: None)
+        ok, err = p.validate("A:C!A1..B2")
+        assert ok, err
+        ok, err = p.validate("B!A1..B2")
+        assert ok, err
+        ok, err = p.validate("bogus")
+        assert not ok
+
+    def test_name_create_3d_stored_and_saved(self, make_app, tmp_path):
+        app, win = make_app()
+        app.cmd_insert_sheet()
+        app.cmd_name_create("SPAN", "A:B!A1..B2")
+        assert app.names["SPAN"]["sheets"] == ["A", "B"]
+        path = str(tmp_path / "n.vg1")
+        app.cmd_save(path)
+        app2, win2 = make_app()
+        app2.load_file(path)
+        assert app2.names["SPAN"]["sheets"] == ["A", "B"]
+        assert app2.names["SPAN"]["range"] == ((0, 0), (1, 1))

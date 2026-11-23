@@ -122,6 +122,10 @@ def tokenize(s: str) -> list[Token]:
                     raise FormulaSyntaxError(f"bad reference at {s[i:i+8]!r}")
                 letters = s[j:k].upper()
                 j = k
+            if sheets is None and not (j < n and (s[j].isdigit() or s[j] == "$")):
+                toks.append(Token("NAME", letters, s[i:j]))
+                i = j
+                continue
             abs_r = False
             if j < n and s[j] == "$":
                 abs_r = True
@@ -129,6 +133,13 @@ def tokenize(s: str) -> list[Token]:
             k = j
             while k < n and s[k].isdigit():
                 k += 1
+            if k < n and s[k].isalpha():
+                k2 = i
+                while k2 < n and (s[k2].isalnum() or s[k2] == "$"):
+                    k2 += 1
+                toks.append(Token("NAME", s[i:k2].upper(), s[i:k2]))
+                i = k2
+                continue
             if k == j:
                 raise FormulaSyntaxError(f"bad reference at {s[i:i+8]!r}")
             digits = s[j:k]
@@ -286,6 +297,9 @@ class _Parser:
         if t.kind == "STR":
             self.next()
             return ("str", t.value)
+        if t.kind == "NAME":
+            self.next()
+            return ("name", t.value)
         if t.kind == "CELL":
             self.next()
             c, r, ac, ar, sheets = t.value
@@ -389,6 +403,26 @@ def _sheet_prefix(sheets) -> str:
     return f"{s1}!" if s1 == s2 else f"{s1}:{s2}!"
 
 
+def collect_names(node, names: list | None = None):
+    """-> list of range-name references in the AST (resolved at register/eval)."""
+    if names is None:
+        names = []
+    kind = node[0]
+    if kind == "name":
+        names.append(node[1])
+    elif kind == "bin":
+        collect_names(node[2], names)
+        collect_names(node[3], names)
+    elif kind == "un":
+        collect_names(node[2], names)
+    elif kind == "pct":
+        collect_names(node[1], names)
+    elif kind == "func":
+        for a in node[2]:
+            collect_names(a, names)
+    return names
+
+
 def _ser_cell(c, r, ac, ar) -> str:
     return ("$" if ac else "") + col_letters(c) + ("$" if ar else "") + str(r + 1)
 
@@ -399,6 +433,8 @@ def serialize(node) -> str:
         return node[2]
     if kind == "str":
         return '"' + node[1].replace('"', '""') + '"'
+    if kind == "name":
+        return node[1]
     if kind == "cell":
         return _ser_cell(node[1], node[2], node[3], node[4])
     if kind == "cell3d":
@@ -432,7 +468,7 @@ def shift(node, dc: int, dr: int):
     Absolute ($-marked) components are preserved. Sheet spans are kept.
     """
     kind = node[0]
-    if kind == "num" or kind == "str":
+    if kind in ("num", "str", "name"):
         return node
     if kind == "cell":
         return ("cell",) + _shift_corner(node[1:], dc, dr)
@@ -504,6 +540,8 @@ def adjust_refs(node, axis: str, pos: int, delta: int, delete: bool = False):
         return (c, nv, ac, ar)
 
     kind = node[0]
+    if kind == "name":
+        return node
     if kind == "cell":
         c, r, ac, ar = node[1], node[2], node[3], node[4]
         nv = adj(c if axis == "col" else r)
@@ -541,13 +579,15 @@ def adjust_refs(node, axis: str, pos: int, delta: int, delete: bool = False):
 # ---------------------------------------------------------------------------
 
 class RangeValue:
-    """A range used inside a formula. Lazy; resolves to scalars on demand."""
+    """A range used inside a formula. Lazy; resolves to scalars on demand.
+    `sheet` pins the range to another sheet (named range on sheet B)."""
 
-    __slots__ = ("ctx", "c1", "r1", "c2", "r2")
+    __slots__ = ("ctx", "c1", "r1", "c2", "r2", "sheet")
 
-    def __init__(self, ctx, c1, r1, c2, r2):
+    def __init__(self, ctx, c1, r1, c2, r2, sheet=None):
         self.ctx = ctx
         self.c1, self.r1, self.c2, self.r2 = c1, r1, c2, r2
+        self.sheet = sheet
 
     @property
     def corners(self):
@@ -558,21 +598,26 @@ class RangeValue:
             for c in range(self.c1, self.c2 + 1):
                 yield c, r
 
+    def _val(self, ctx, c, r):
+        if self.sheet is not None:
+            return ctx.val_sheet(self.sheet, c, r)
+        return ctx.val(c, r)
+
     def values(self):
         for c, r in self.cells():
-            yield self.ctx.val(c, r)
+            yield self._val(self.ctx, c, r)
 
     def scalar(self, ctx=None):
         ctx = ctx or self.ctx
         fc, fr = ctx.fkey
         c1, r1, c2, r2 = self.c1, self.r1, self.c2, self.r2
         if c1 <= fc <= c2 and r1 <= fr <= r2:
-            return ctx.val(fc, fr)
+            return self._val(ctx, fc, fr)
         if r1 == r2 and c1 <= fc <= c2:
-            return ctx.val(fc, r1)
+            return self._val(ctx, fc, r1)
         if c1 == c2 and r1 <= fr <= r2:
-            return ctx.val(c1, fr)
-        return ctx.val(c1, r1)
+            return self._val(ctx, c1, fr)
+        return self._val(ctx, c1, r1)
 
     def __repr__(self):  # pragma: no cover
         return f"RangeValue({col_letters(self.c1)}{self.r1+1}..{col_letters(self.c2)}{self.r2+1})"
@@ -644,6 +689,30 @@ class Ctx:
 
     def val(self, c, r):
         return self.engine.value(c, r)
+
+    def val_sheet(self, sheet, c, r):
+        wb = getattr(self.engine, "wb", None)
+        if wb is None or sheet is None or sheet == wb.active:
+            return self.engine.value(c, r)
+        ws = wb.sheets.get(sheet)
+        if ws is None:
+            return None
+        cell = ws.cells.get((c, r))
+        return cell.value if cell is not None else None
+
+    def resolve_name(self, name):
+        from .functions import ERR
+        wb = getattr(self.engine, "wb", None)
+        names = getattr(wb, "names", None) if wb is not None else None
+        entry = names.get(name.upper()) if names else None
+        if entry is None:
+            return ERR
+        (c1, r1), (c2, r2) = entry["range"]
+        sheets = entry.get("sheets")
+        if sheets:
+            return Range3D(self, sheets[0], sheets[1], c1, r1, c2, r2)
+        sheet = entry.get("sheet")
+        return RangeValue(self, c1, r1, c2, r2, sheet=sheet)
 
     def val3d(self, s1, s2, c, r):
         wb = getattr(self.engine, "wb", None)
@@ -753,6 +822,9 @@ def compile_node(node):
         s1, s2 = node[1]
         (c1, r1, _, _), (c2, r2, _, _) = node[2], node[3]
         return lambda ctx: Range3D(ctx, s1, s2, c1, r1, c2, r2)
+    if kind == "name":
+        nm = node[1]
+        return lambda ctx: ctx.resolve_name(nm)
     if kind == "bin":
         op = node[1]
         fl = compile_node(node[2])
@@ -884,7 +956,23 @@ class Engine:
             self.formulas.pop(key, None)
             self._graph_stale = True
             return False
-        self.formulas[key] = Compiled(cell.raw, ast)
+        comp = Compiled(cell.raw, ast)
+        wb = self.wb
+        if wb is not None:
+            for nm in collect_names(ast):
+                entry = wb.names.get(nm)
+                if not entry:
+                    continue
+                (c1, r1), (c2, r2) = entry["range"]
+                sheets = entry.get("sheets")
+                if sheets:
+                    comp.xranges.append((sheets[0], sheets[1], (c1, r1), (c2, r2)))
+                elif entry.get("sheet") == self.sheet.name:
+                    comp.ranges.append(((c1, r1), (c2, r2)))
+                else:
+                    sh = entry.get("sheet", "")
+                    comp.xranges.append((sh, sh, (c1, r1), (c2, r2)))
+        self.formulas[key] = comp
         self._graph_stale = True
         self.dirty.add(key)
         return True

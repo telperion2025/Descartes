@@ -98,6 +98,45 @@ def split_range(text: str) -> tuple[tuple[int, int], tuple[int, int]]:
     return normalize_corners(a, b)
 
 
+def split_range_any(text: str):
+    """Parse 'A1..B2', 'B!A1..B2' or 'A:C!A1..B2' -> (sheets, corner1, corner2).
+
+    sheets is None for a plain 2-D range, (S, S) for a single-sheet-qualified
+    range, (S1, S2) for a 3-D range.
+    """
+    s = text.strip()
+    sheets = None
+    if "!" in s:
+        pre, rest = s.split("!", 1)
+        if ":" in pre:
+            a, b = pre.split(":", 1)
+            sheets = (a.replace("$", "").strip().upper(), b.replace("$", "").strip().upper())
+        else:
+            sh = pre.replace("$", "").strip().upper()
+            sheets = (sh, sh)
+        s = rest
+    corners = split_range(s)
+    return sheets, corners[0], corners[1]
+
+
+def is_valid_name(name: str) -> bool:
+    """1-2-3 range-name rules: 1-15 chars, letter/underscore start, alnum/._-,
+    and not cell-address-like (A1) or sheet-qualified (A!A1, A:B!A1)."""
+    if not name or len(name) > 15:
+        return False
+    if not (name[0].isalpha() or name[0] == "_"):
+        return False
+    if not all(ch.isalnum() or ch == "_" for ch in name):
+        return False
+    if "!" in name or ":" in name:
+        return False
+    try:
+        parse_address(name)
+        return False
+    except ValueError:
+        return True
+
+
 def normalize_corners(a: tuple[int, int], b: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
     (c1, r1), (c2, r2) = a, b
     if c1 > c2:

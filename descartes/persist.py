@@ -61,10 +61,13 @@ def save_vg1(path, sheets: dict[str, Worksheet], names: dict | None = None,
         }
     for name in sorted(names or {}):
         n = names[name]
-        doc["names"][name] = {
+        nd = {
             "sheet": n.get("sheet", "A"),
             "range": [list(n["range"][0]), list(n["range"][1])],
         }
+        if n.get("sheets"):
+            nd["sheets"] = list(n["sheets"])
+        doc["names"][name] = nd
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1, sort_keys=False, ensure_ascii=False)
         f.write("\n")
@@ -92,7 +95,10 @@ def load_vg1(path):
     names = {}
     for name, n in doc.get("names", {}).items():
         (c1, r1), (c2, r2) = n["range"]
-        names[name] = {"sheet": n.get("sheet", "A"), "range": ((c1, r1), (c2, r2))}
+        entry = {"sheet": n.get("sheet", "A"), "range": ((c1, r1), (c2, r2))}
+        if n.get("sheets"):
+            entry["sheets"] = list(n["sheets"])
+        names[name] = entry
     recalc = doc.get("recalc", {})
     c = doc.get("cursor", [0, 0])
     return {

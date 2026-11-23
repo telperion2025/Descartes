@@ -19,8 +19,8 @@ from .engine import (Engine, FormulaSyntaxError, adjust_refs, parse, serialize,
                      shift_raw)
 from .grid import (EMPTY, FORMULA, LABEL, MAX_COLS, MAX_ROWS, NUMBER, Worksheet,
                    classify_entry, col_letters, format_address, format_range,
-                   normalize_corners, parse_address, range_cells, split_range,
-                   VALUE_START)
+                   is_valid_name, normalize_corners, parse_address, range_cells,
+                   split_range, split_range_any, VALUE_START)
 from .graph import GraphDef
 from .keys import MouseParser, read_event
 from .menus import MENU_TREE, TOP_LABELS, MenuState
@@ -74,7 +74,7 @@ class Prompt:
         kind = spec.get("kind", "text")
         if kind == "range":
             try:
-                split_range(text)
+                split_range_any(text)
                 return True, ""
             except ValueError as e:
                 return False, str(e)
@@ -314,7 +314,7 @@ class App:
             "wg_protect_off": lambda a: setattr(self.sheet, "protection", False),
             "r_format": lambda a: self.cmd_range_format(split_range(a[0]), a[1]),
             "r_erase": lambda a: self.cmd_range_erase(split_range(a[0])),
-            "r_name_create": lambda a: self.cmd_name_create(a[0], split_range(a[1])),
+            "r_name_create": lambda a: self.cmd_name_create(a[0], a[1]),
             "r_name_delete": lambda a: self.cmd_name_delete(a[0]),
             "r_name_reset": lambda a: self.names.clear() or self.message_msg("Names reset"),
             "r_name_table": lambda a: self.message_msg(f"{len(self.names)} names"),
@@ -1170,9 +1170,26 @@ class App:
             if cell.is_empty:
                 self.sheet.clear_cell(c, r)
 
-    def cmd_name_create(self, name, rng):
-        self.names[name.upper()] = {"sheet": self.sheet.name, "range": rng}
-        self.message_msg(f"Name {name.upper()} = {format_range(*rng)}")
+    def cmd_name_create(self, name, range_text):
+        nm = name.strip().upper()
+        if not is_valid_name(nm):
+            self.error_msg(f"Bad range name: {name}")
+            return
+        try:
+            sheets, (c1, r1), (c2, r2) = split_range_any(range_text)
+        except ValueError as e:
+            self.error_msg(str(e))
+            return
+        entry = {"sheet": self.active, "range": ((c1, r1), (c2, r2))}
+        if sheets:
+            if sheets[0] == sheets[1]:
+                entry["sheet"] = sheets[0]
+            else:
+                entry["sheets"] = [sheets[0], sheets[1]]
+        self.names[nm] = entry
+        self._rebuild_xdeps()
+        self._recalc(force=True)
+        self.message_msg(f"Name {nm} = {range_text.strip().upper()}")
 
     def cmd_name_delete(self, name):
         if name.upper() in self.names:
