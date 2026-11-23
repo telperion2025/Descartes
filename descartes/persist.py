@@ -32,7 +32,7 @@ VG1_VERSION = 1
 
 def save_vg1(path, sheets: dict[str, Worksheet], names: dict | None = None,
              cursor=(0, 0), recalc_mode="auto", iterations=0, graphs=None,
-             print_settings=None, window=None):
+             print_settings=None, window=None, active=None):
     """Write the native .vg1 JSON file. Deterministic ordering (sheet,row,col)."""
     doc = {
         "format": VG1_FORMAT,
@@ -41,6 +41,7 @@ def save_vg1(path, sheets: dict[str, Worksheet], names: dict | None = None,
         "names": {},
         "recalc": {"mode": recalc_mode, "iterations": iterations},
         "cursor": [cursor[0], cursor[1]],
+        "active": active or (next(iter(sheets)) if sheets else "A"),
         "graphs": graphs or [],
         "print": print_settings or {},
         "window": window or {},
@@ -60,10 +61,13 @@ def save_vg1(path, sheets: dict[str, Worksheet], names: dict | None = None,
         }
     for name in sorted(names or {}):
         n = names[name]
-        doc["names"][name] = {
+        nd = {
             "sheet": n.get("sheet", "A"),
             "range": [list(n["range"][0]), list(n["range"][1])],
         }
+        if n.get("sheets"):
+            nd["sheets"] = list(n["sheets"])
+        doc["names"][name] = nd
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1, sort_keys=False, ensure_ascii=False)
         f.write("\n")
@@ -91,7 +95,10 @@ def load_vg1(path):
     names = {}
     for name, n in doc.get("names", {}).items():
         (c1, r1), (c2, r2) = n["range"]
-        names[name] = {"sheet": n.get("sheet", "A"), "range": ((c1, r1), (c2, r2))}
+        entry = {"sheet": n.get("sheet", "A"), "range": ((c1, r1), (c2, r2))}
+        if n.get("sheets"):
+            entry["sheets"] = list(n["sheets"])
+        names[name] = entry
     recalc = doc.get("recalc", {})
     c = doc.get("cursor", [0, 0])
     return {
@@ -100,6 +107,7 @@ def load_vg1(path):
         "recalc_mode": recalc.get("mode", "auto"),
         "iterations": int(recalc.get("iterations", 0)),
         "cursor": (int(c[0]), int(c[1])),
+        "active": doc.get("active"),
         "graphs": doc.get("graphs", []),
         "print": doc.get("print", {}),
         "window": doc.get("window", {}),

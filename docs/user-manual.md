@@ -16,7 +16,7 @@ python3 -m descartes [file.vg1|file.wk1|file.dif|file.txt]
  row 1   menu bar (blank blue in READY; the menu tree after / or F10)
  row 2   control panel: cell address + mode on the left, prompt text on the right
  row 3   cell content line: the raw text of the highlighted cell (full text)
- row 4   column headers A B C ... (current column highlighted)
+ row 4   column headers A B C ... in reverse video (current column bold)
  rows 5-22  worksheet cells, 7-char row-number gutter on the left
  row 23  indicator line: CAPS NUM SCROLL CALC MEM OVR/INS, clock on the right
  row 24  message line
@@ -46,6 +46,7 @@ Descartes is a two-mode-plus state machine, exactly like 1-2-3:
 | --- | --- |
 | Arrow keys | move the cell cursor one cell |
 | PgUp / PgDn | move 18 rows |
+| Ctrl+PgUp / Ctrl+PgDn | previous / next worksheet (wraps) |
 | Home / End | top of column / bottom of column |
 | Enter | commit an entry (then move down), or move down in READY |
 | Tab / Shift-Tab | move right / left |
@@ -78,6 +79,8 @@ Full syntax and the complete `@function` list are in the
 @IF(B1>100,"big","small")
 @VLOOKUP(A1,PriceList,2)
 @DATE(2024,1,1)
+@SUM(A:C!A1..A10)     <- 3-D: sums A1..A10 on every sheet from A through C
+@SUM(TOTAL)           <- named range (created with /RANGE NAME CREATE)
 +"Total: "&@STRING(@SUM(A1..A10),2)
 ```
 
@@ -126,10 +129,11 @@ current entry reverse-highlighted:
 ### 5.2 The command tree (summary)
 
 - **WORKSHEET** — GLOBAL (LABEL-PREFIX, ZERO-SUPPRESS, FORMAT, RECALCULATION
-  AUTO/MANUAL/ITERATION, PROTECTION), INSERT/DELETE COLUMN/ROW, ERASE, COLUMN-WIDTH
-  SET/RESET, HIDE/UNHIDE, WINDOW HORIZONTAL/VERTICAL/CLEAR/SYNC/UNSYNC/CHANGE, TITLES
-  BOTH/HORIZONTAL/VERTICAL/CLEAR, STATUS, PAGE
+  AUTO/MANUAL/ITERATION, PROTECTION), INSERT/DELETE COLUMN/ROW/SHEET, ERASE,
+  COLUMN-WIDTH SET/RESET, HIDE/UNHIDE, WINDOW HORIZONTAL/VERTICAL/CLEAR/SYNC/UNSYNC/CHANGE,
+  TITLES BOTH/HORIZONTAL/VERTICAL/CLEAR, STATUS, PAGE
 - **RANGE** — FORMAT, ERASE, NAME (CREATE/DELETE/LABELS/RESET/TABLE), JUSTIFY, LABEL,
+  BACKSOLVE (solve a formula cell to a target value by adjusting a variable cell),
   PROTECT/UNPROTECT, INPUT, TRANSPOSE, VALUE, SEARCH
 - **COPY / MOVE** — source range → destination anchor
 - **FILE** — SAVE, LOAD, COMBINE (COPY/ADD/SUBTRACT), XTRACT, ERASE, LIST, IMPORT

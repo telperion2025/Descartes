@@ -38,7 +38,10 @@ MENU_TREE = [
             _m("COL-PREFIX", action="wg_col_prefix",
                prompt=[{"text": "Column prefix:", "kind": "choice", "choices": ["'", "^", '"']}]),
             _m("ZERO-SUPPRESS", action="wg_zero_suppress"),
-            _m("FORMAT", action="wg_format"),
+            _m("FORMAT", action="wg_format",
+               prompt=[{"text": "Global format:", "kind": "choice",
+                        "choices": ["FIXED", "SCIENTIFIC", "CURRENCY", "PERCENT",
+                                    "COMMA", "GENERAL", "TEXT", "DATE", "TIME", "HIDDEN"]}]),
             _m("RECALCULATION", [
                 _m("AUTO", action="wg_recalc_auto"),
                 _m("MANUAL", action="wg_recalc_manual"),
@@ -52,10 +55,12 @@ MENU_TREE = [
         _m("INSERT", [
             _m("COLUMN", action="w_insert_col", prompt=[{"text": "Insert columns at:", "kind": "cell"}]),
             _m("ROW", action="w_insert_row", prompt=[{"text": "Insert rows at:", "kind": "cell"}]),
+            _m("SHEET", action="w_insert_sheet"),
         ]),
         _m("DELETE", [
             _m("COLUMN", action="w_delete_col", prompt=[{"text": "Delete columns at:", "kind": "cell"}]),
             _m("ROW", action="w_delete_row", prompt=[{"text": "Delete rows at:", "kind": "cell"}]),
+            _m("SHEET", action="w_delete_sheet", prompt=[{"text": "Sheet name:", "kind": "text"}]),
         ]),
         _m("ERASE", action="w_erase", prompt=[{"text": "Erase range:", "kind": "range"}]),
         _m("COLUMN-WIDTH", [
@@ -111,6 +116,10 @@ MENU_TREE = [
                                              {"text": "Destination:", "kind": "cell"}]),
         _m("SEARCH", action="r_search", prompt=[{"text": "Search range:", "kind": "range"},
                                                {"text": "Find what:", "kind": "text"}]),
+        _m("BACKSOLVE", action="r_backsolve", prompt=[
+            {"text": "Cell to solve:", "kind": "cell"},
+            {"text": "Target value:", "kind": "number"},
+            {"text": "Variable cell:", "kind": "cell"}]),
     ]),
     _m("COPY", action="copy", prompt=[{"text": "Copy from:", "kind": "range"},
                                       {"text": "To:", "kind": "cell"}]),
@@ -155,8 +164,8 @@ MENU_TREE = [
         _m("FILE", action="p_file", prompt=[{"text": "Print file name:", "kind": "file", "save": True},
                                             {"text": "Range:", "kind": "range"}]),
         _m("RANGE", action="p_range", prompt=[{"text": "Print range:", "kind": "range"},
-                                             {"text": "Destination:", "kind": "choice",
-                                              "choices": ["PRINTER", "FILE"]}]),
+                                             {"text": "Destination (PRINTER, |pipe, or file name):",
+                                              "kind": "text"}]),
         _m("LINES-PAGE", action="p_linespage", prompt=[{"text": "Lines per page:", "kind": "number"}]),
         _m("MARGINS", action="p_margins", prompt=[{"text": "Left margin:", "kind": "number"},
                                                  {"text": "Right margin:", "kind": "number"},

@@ -5,7 +5,8 @@ Python 3 with the standard-library `curses` module only — no pip dependencies,
 toolkit. It reproduces the faithful VGA/DOS text look of Lotus 1-2-3 3.x: black worksheet
 with white text, reverse-video cursor cell, blue menu bar, cyan control panel, slash
 pulldown menus, the two-mode (READY / VALUE / EDIT / MENU / POINT) state machine, `@`
-functions, range operations, text-mode graphs, a database (`/DATA`), and mouse support.
+functions, range operations, multi-sheet workbooks with 3-D ranges (`A:C!A1..B2`),
+text-mode graphs, a database (`/DATA`), and mouse support.
 
 ## Requirements
 

@@ -171,6 +171,7 @@ _RAW_SEQUENCES = {
     "\x1b[A": "UP", "\x1b[B": "DOWN", "\x1b[C": "RIGHT", "\x1b[D": "LEFT",
     "\x1b[H": "HOME", "\x1b[F": "END",
     "\x1b[5~": "PGUP", "\x1b[6~": "PGDN",
+    "\x1b[5;5~": "CTRL_PGUP", "\x1b[6;5~": "CTRL_PGDN",
     "\x1b[2~": "INS", "\x1b[3~": "DEL",
     "\x1bOA": "UP", "\x1bOB": "DOWN", "\x1bOC": "RIGHT", "\x1bOD": "LEFT",
     "\x1bOH": "HOME", "\x1bOF": "END",
@@ -266,3 +267,164 @@ def read_event(stdscr, escdelay_ms: int = 25) -> KeyEvent | None:
     if name == "BACKSPACE":
         return KeyEvent("key", name="BACKSPACE")
     return KeyEvent("key", name=name)
+
+
+# ---------------------------------------------------------------------------
+# Brute-force raw input: read bytes straight from the tty and parse everything
+# ourselves (mouse SGR 1006 / legacy 1000, CSI/SS3 keys, UTF-8), never relying
+# on ncurses getch / terminfo decoding. Used by App.run; disable with
+# DESCARTES_RAW_INPUT=0 to fall back to the curses getch path.
+# ---------------------------------------------------------------------------
+
+import os
+import re
+import select
+
+_MOUSE_SGR_RE = re.compile(rb"^\x1b\[<(\d+);(\d+);(\d+)([Mm])")
+_MOUSE_LEGACY_PREFIX = b"\x1b[M"
+
+
+class RawReader:
+    """Incremental parser over os.read() bytes from a tty fd."""
+
+    def __init__(self, fd, escdelay_ms=None):
+        self.fd = fd
+        if escdelay_ms is None:
+            try:
+                escdelay_ms = int(os.environ.get("ESCDELAY", "25"))
+            except ValueError:
+                escdelay_ms = 25
+        self.escdelay = max(1, escdelay_ms) / 1000.0
+        self.buf = bytearray()
+        self.eof = False
+        self._seqs = sorted(((s.encode("latin-1"), n) for s, n in _RAW_SEQUENCES.items()),
+                            key=lambda kv: -len(kv[0]))
+        self._prefixes = [s for s, _ in self._seqs] + [b"\x1b[<", b"\x1b[M"]
+        try:
+            sz = os.get_terminal_size(fd)
+            self._last_size = (sz.columns, sz.lines)
+        except OSError:
+            self._last_size = None
+
+    def _resize_event(self):
+        try:
+            sz = os.get_terminal_size(self.fd)
+        except OSError:
+            return None
+        cur = (sz.columns, sz.lines)
+        if self._last_size is not None and cur != self._last_size:
+            self._last_size = cur
+            return KeyEvent("key", name="RESIZE")
+        self._last_size = cur
+        return None
+
+    def _is_prefix(self):
+        b = bytes(self.buf)
+        return any(p.startswith(b) for p in self._prefixes)
+
+    def _parse(self, final):
+        """-> (event or None, bytes consumed)."""
+        buf = self.buf
+        if not buf:
+            return None, 0
+        if buf[0] == 0x1B:
+            b = bytes(buf)
+            m = _MOUSE_SGR_RE.match(b)
+            if m:
+                body = b"%s;%s;%s" % (m.group(1), m.group(2), m.group(3))
+                ev = _parse_sgr(body, m.group(4).decode())
+                n = m.end()
+                del buf[:n]
+                return (KeyEvent("mouse", mouse=ev) if ev else None), n
+            if b.startswith(_MOUSE_LEGACY_PREFIX):
+                if len(b) >= 6:
+                    ev = _parse_legacy(b[3:6])
+                    del buf[:6]
+                    return (KeyEvent("mouse", mouse=ev) if ev else None), 6
+                if not final:
+                    return None, 0
+            for seq, name in self._seqs:
+                if b.startswith(seq):
+                    del buf[:len(seq)]
+                    return KeyEvent("key", name=name), len(seq)
+            if not final and self._is_prefix():
+                return None, 0
+            if b.startswith(b"\x1b["):
+                j = 2
+                while j < len(b) and not (0x40 <= b[j] <= 0x7E):
+                    j += 1
+                if j < len(b):
+                    del buf[:j + 1]
+                    return None, j + 1
+                if final:
+                    del buf[:len(b)]
+                    return None, len(b)
+                return None, 0
+            if b.startswith(b"\x1bO"):
+                if len(b) >= 3:
+                    del buf[:3]
+                    return None, 3
+                if final:
+                    del buf[:len(b)]
+                    return None, len(b)
+                return None, 0
+            if len(b) >= 2 and 32 <= b[1] < 127:
+                ch = chr(b[1])
+                del buf[:2]
+                return KeyEvent("char", ch=ch, name="ALT+" + ch), 2
+            del buf[:1]
+            return KeyEvent("key", name="ESC"), 1
+        c0 = buf[0]
+        if c0 < 32 or c0 == 127:
+            del buf[:1]
+            name = {9: "TAB", 10: "ENTER", 13: "ENTER", 127: "BACKSPACE", 8: "BACKSPACE"}.get(c0)
+            if name:
+                return KeyEvent("key", name=name), 1
+            return KeyEvent("char", ch=chr(c0)), 1
+        if c0 < 0x80:
+            del buf[:1]
+            return KeyEvent("char", ch=chr(c0)), 1
+        n = 2 if c0 < 0xE0 else (3 if c0 < 0xF0 else 4)
+        if len(buf) < n and not final:
+            return None, 0
+        try:
+            ch = bytes(buf[:n]).decode("utf-8")
+        except UnicodeDecodeError:
+            ch, n = chr(c0), 1
+        del buf[:n]
+        return KeyEvent("char", ch=ch), n
+
+    def read_event(self):
+        """Block until an event (or timeout); None on timeout/EOF."""
+        while True:
+            ev = self._resize_event()
+            if ev is not None:
+                return ev
+            ev, n = self._parse(final=False)
+            if n:
+                if ev is not None:
+                    return ev
+                continue
+            need_esc = bool(self.buf) and self.buf[0] == 0x1B and self._is_prefix()
+            timeout = self.escdelay if need_esc else 0.25
+            try:
+                r, _, _ = select.select([self.fd], [], [], timeout)
+            except (OSError, ValueError):
+                self.eof = True
+                return None
+            if not r:
+                ev, n = self._parse(final=True)
+                if ev is not None:
+                    return ev
+                if n:
+                    continue
+                return None
+            try:
+                data = os.read(self.fd, 4096)
+            except OSError:
+                self.eof = True
+                return None
+            if not data:
+                self.eof = True
+                return None
+            self.buf += data

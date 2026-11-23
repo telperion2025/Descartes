@@ -33,8 +33,8 @@ pure logic and is unit-tested without a terminal (fake-curses harness drives the
 
 - Grid limits (Release 3.1): **256 columns A..IV x 8192 rows**. Cell address =
   letters + 1-based row (`A1..IV8192`). Internally cells are keyed
-  `(sheet_name, col, row)` with zero-based `col`/`row`, so later phases can add
-  multi-sheet and 3-D ranges without migration; a file currently holds a single sheet.
+  `(sheet_name, col, row)` with zero-based `col`/`row`; files hold multiple sheets
+  (A, B, C, ...), each a `Worksheet`, with cross-sheet and 3-D references.
 - Column widths: per-column 0-240 chars, global default **9**; width affects display
   only, never storage. Row height is one screen line.
 - `Cell`:
@@ -90,7 +90,19 @@ pure logic and is unit-tested without a terminal (fake-curses harness drives the
   ```
 
 - Parentheses; function calls `@NAME(arg, ...)` (also `@NA` with no parentheses).
-- A leading `+` is the formula indicator, not an operator.
+- A leading `+` is the formula indicator, not an operator. Parenthesization depth is
+  capped (100); deeper nesting is a syntax error, not a crash.
+- Sheet-qualified refs: `B!A1` (single sheet), 3-D ranges `A:C!A1..B2` (sheets A through
+  C inclusive; `$` allowed on sheet names, e.g. `$A:$C!A1`). A 3-D range inside a
+  function aggregates over all sheets in the span (`@SUM(A:C!A1..B2)`); in scalar
+  context it resolves to the active sheet if it is in the span, else the span's first
+  sheet. Copy/shift keeps the sheet span; insert/delete adjusts the cell corners.
+- Range names (created with `/RANGE NAME CREATE`) are usable directly in formulas:
+  `+@SUM(TOTAL)`, `+TOTAL*2`. Names are 1-15 chars, letter/underscore start, and must
+  not look like a cell address (`A1`) or sheet-qualified ref (`A!A1`). Names may target
+  another sheet (`B!A1..B2`) or a 3-D span (`A:C!A1..B2`); an unknown name evaluates to
+  ERR. Names are not shifted by /COPY and edits inside a named range propagate to
+  formulas using it.
 - A range used in a scalar context resolves by implicit intersection with the formula
   cell (single-row/single-column ranges intersect by column/row); otherwise the first
   cell of the range is used.
@@ -163,11 +175,11 @@ Mono terminals use `A_REVERSE` for the menu/panel/highlight/cursor pairs.
 
 | pair | fg/bg | used for |
 | --- | --- | --- |
-| 1 | white/black | worksheet background, column headers, row gutter |
+| 1 | white/black | worksheet background |
 | 2 | white/blue | menu bar (blank blue bar in READY) and dropdown boxes |
 | 3 | black/white + bold | highlighted menu item, dialog cursor, POINT range |
-| 4 | white/black | column headers, row gutter |
-| 5 | white/black + bold | current column header / row, frozen title cols |
+| 4 | black/white | column headers, row gutter (reverse video, as in 1-2-3) |
+| 5 | black/white + bold | current column header / row, frozen title cols |
 | 6 | red/white | error messages |
 | 7 | black/white + bold | cursor cell (reverse video, as in 1-2-3) |
 | 8 | black/cyan | control panel (rows 2-3) and indicator line (row 23) |
@@ -188,8 +200,8 @@ Top level: `WORKSHEET RANGE COPY MOVE FILE PRINT GRAPH DATA SYSTEM ADD-IN`
   GLOBAL  LABEL-PREFIX | COL-PREFIX | ZERO-SUPPRESS | FORMAT
           RECALCULATION  AUTO | MANUAL | ITERATION (prompt: count)
           PROTECTION  ENABLE | DISABLE
-  INSERT  COLUMN | ROW          (prompt: cell)
-  DELETE  COLUMN | ROW          (prompt: cell)
+  INSERT  COLUMN | ROW (cell) | SHEET
+  DELETE  COLUMN | ROW (cell) | SHEET (name)
 
 INSERT/DELETE adjust formula references like 1-2-3: every reference (including `$`
 absolute ones) at or beyond the edit point shifts by the inserted/deleted amount, ranges
@@ -203,11 +215,21 @@ becomes `@ERR()` (`engine.adjust_refs`).
   STATUS | PAGE
 /RANGE
   FORMAT (range, then choice FIXED/SCIENTIFIC/CURRENCY/PERCENT/COMMA/GENERAL/TEXT/DATE/TIME/HIDDEN)
-  ERASE (range) | JUSTIFY (range) | LABEL (range, LEFT/CENTER/RIGHT)
-  NAME  CREATE (name, range) | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM) | RESET | TABLE
+  ERASE (range) | JUSTIFY (range; rotates each row one cell right, rightmost wraps
+        to the leftmost column, formula refs shifted) | LABEL (range, LEFT/CENTER/RIGHT)
+  NAME  CREATE (name, range; range may be sheet-qualified `B!A1..B2` or 3-D `A:C!A1..B2`)
+        | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM — label taken from the
+          named edge, range is the rest of that row/column) | RESET | TABLE
   PROTECT | UNPROTECT (range) | INPUT (range)
   TRANSPOSE (range, dest cell) | VALUE (range, dest cell) | SEARCH (range, text)
-/COPY | /MOVE                  (source range, dest anchor/range; tiling on multiples)
+  BACKSOLVE (target cell, target value, variable cell; secant goal-seek on the
+        active sheet — sets the variable cell so the target formula hits the value;
+        restores the variable cell and reports an error when no solution exists)
+/COPY | /MOVE                  (source range, dest anchor/range; tiling on multiples;
+        source/dest may be sheet-qualified `B!A1..B2` or 3-D `A:C!A1..B2` — a 3-D source
+        copies sheet-by-sheet onto a 3-D destination of the same size, or onto the
+        active sheet when the destination is 2-D; /MOVE clears the source sheets)
+/WORKSHEET GLOBAL FORMAT        (choice; sets the sheet-wide default format)
 /FILE
   SAVE | SAVE-AS (file) | LOAD (file)
   COMBINE  COPY | ADD | SUBTRACT  (file, range-in-file, dest cell)
@@ -215,12 +237,14 @@ becomes `@ERR()` (`engine.adjust_refs`).
   IMPORT  DIF | TEXT | NUMBERS (file, anchor cell)
   DIRECTORY (path) | QUIT (exit the program)
 /PRINT
-  PRINTER (device or |command, range) | FILE (file, range) | RANGE (range, PRINTER|FILE)
+  PRINTER (device or |command, range) | FILE (file, range)
+  RANGE (range, destination: PRINTER, |pipe-command, or a file name)
   LINES-PAGE (n) | MARGINS (l r t b) | BORDERS (YES/NO) | HEADER (text)
 /GRAPH
   TYPE  LINE | BAR | XY | STACKED-BAR | PIE
   X-RANGE (range) | A..F (range, name) | RESET | VIEW | SAVE (name)
-  OPTIONS  LEGEND (text) | TITLES (text) | GRID | SCALE
+  OPTIONS  LEGEND (text) | FORMAT (text) | TITLES (text) | GRID (toggles horizontal
+        and vertical gridlines) | SCALE (auto)
 /DATA
   FILL (range, start, step, stop)
   TABLE  1-VARIABLE (range, input cell) | 2-VARIABLE (range, row cell, col cell)
@@ -249,6 +273,7 @@ accept typed text or POINT-mode selection (Enter on an empty entry switches to P
 | Backspace | erase cell | delete char | — | back one level | delete char / previous prompt |
 | arrows | move | move entry cursor (L/R) | move | navigate | move entry cursor |
 | PgUp/PgDn/Home/End | scroll/jump | cursor to start/end | move | — | — |
+| Ctrl+PgUp / Ctrl+PgDn | previous / next sheet (wraps) | | | | |
 | F1 | help screen | | | | |
 | F2 / double-click | EDIT | | | | |
 | F9 | force recalc | | | | |
@@ -266,9 +291,16 @@ macOS/BSD for snappy Alt-keys.
 
 - Enabled at startup by writing `ESC[?1000h ESC[?1006h`; disabled in a `finally` and on
   SIGTERM/SIGHUP with `ESC[?1006l ESC[?1000l`.
-- Parsed manually in `keys.py::MouseParser` (SGR 1006 `ESC[<Cb;Cx;Cy M/m`, legacy 1000
-  `ESC[M Cb Cx Cy`), normalized to `MouseEvent(x, y, button, press, release, click_count
-  (<=400 ms double/triple), drag, wheel_up, wheel_down, modifiers)`.
+- Parsed manually — brute force, not via ncurses: `App.run` reads raw bytes from the tty
+  (`keys.py::RawReader`, `os.read` + `select`) and decodes everything itself — SGR 1006
+  `ESC[<Cb;Cx;Cy M/m`, legacy 1000 `ESC[M Cb Cx Cy`, CSI/SS3 key sequences, UTF-8 — so
+  mouse works even when terminfo claims `kmous` and ncurses would otherwise eat the
+  bytes. Normalized to `MouseEvent(x, y, button, press, release, click_count
+  (<=400 ms double/triple), drag, wheel_up, wheel_down, modifiers)`. Set
+  `DESCARTES_RAW_INPUT=0` to fall back to the curses `getch` path (`read_event` +
+  `MouseParser`). Terminal resizes are detected by polling `os.get_terminal_size`.
+  Unknown/unmatched escape sequences are swallowed whole (never leak into cell entry),
+  and tty EOF ends the input loop cleanly.
 - Behavior table in [user manual §10](user-manual.md#10-mouse).
 - tmux >= 3.2 with `set -g mouse on` passes 1006 through (origin = pane); TERM=screen*
   without mouse support is detected and the app stays keyboard-only; malformed mouse
@@ -357,5 +389,7 @@ The acceptance walkthrough of the spec is driven end-to-end in
 
 ## 13. Non-goals
 
-Macros (3.1 `{commands}`), multi-sheet printing and 3-D ranges, backsolver, mouse
-column-resize handles, color beyond text modes, multi-line cells.
+Macros (3.1 `{commands}`), multi-sheet printing, mouse column-resize handles, color
+beyond text modes, multi-line cells. (Multi-sheet workbooks, 3-D ranges, named ranges
+in formulas, cross-sheet /COPY, and /RANGE BACKSOLVE are implemented:
+`/WORKSHEET INSERT/DELETE SHEET`, Ctrl+PgUp/PgDn, `A:C!A1..B2`, `/RANGE BACKSOLVE`.)

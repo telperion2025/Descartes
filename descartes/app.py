@@ -19,10 +19,10 @@ from .engine import (Engine, FormulaSyntaxError, adjust_refs, parse, serialize,
                      shift_raw)
 from .grid import (EMPTY, FORMULA, LABEL, MAX_COLS, MAX_ROWS, NUMBER, Worksheet,
                    classify_entry, col_letters, format_address, format_range,
-                   normalize_corners, parse_address, range_cells, split_range,
-                   VALUE_START)
+                   is_valid_name, normalize_corners, parse_address, range_cells,
+                   split_range, split_range_any, VALUE_START)
 from .graph import GraphDef
-from .keys import MouseParser, read_event
+from .keys import MouseParser, RawReader, read_event
 from .menus import MENU_TREE, TOP_LABELS, MenuState
 from .screen import (GUTTER_W, MIN_H, MIN_W, ROW_CONTENT, ROW_CONTROL,
                      ROW_ERROR, ROW_GRID0, ROW_GRID1, ROW_HEADERS,
@@ -54,6 +54,21 @@ READY, VALUE, LABEL, EDIT, POINT, MENU, DIALOG, ERROR = (
     "READY", "VALUE", "LABEL", "EDIT", "POINT", "MENU", "DIALOG", "ERROR")
 GRAPH, SYSTEM, HELP = "GRAPH", "SYSTEM", "HELP"
 
+_FORMAT_KINDS = {
+    "FIXED": {"type": "fixed", "decimals": 2},
+    "SCIENTIFIC": {"type": "sci", "decimals": 2},
+    "CURRENCY": {"type": "currency", "decimals": 2},
+    "PERCENT": {"type": "percent", "decimals": 0},
+    "COMMA": {"type": "comma", "decimals": 2},
+    "GENERAL": None,
+    "TEXT": {"type": "text"},
+    "DATE": {"type": "date", "style": "dd-mmm-yy"},
+    "TIME": {"type": "time", "style": "hh:mm:ss"},
+    "HIDDEN": {"type": "hidden"},
+}
+_FORMAT_CHOICES = ["FIXED", "SCIENTIFIC", "CURRENCY", "PERCENT", "COMMA", "GENERAL",
+                   "TEXT", "DATE", "TIME", "HIDDEN"]
+
 
 class Prompt:
     """A prompt chain: list of prompt specs; on Enter each answer is validated
@@ -74,7 +89,7 @@ class Prompt:
         kind = spec.get("kind", "text")
         if kind == "range":
             try:
-                split_range(text)
+                split_range_any(text)
                 return True, ""
             except ValueError as e:
                 return False, str(e)
@@ -100,8 +115,12 @@ class App:
     def __init__(self, stdscr, filepath: str | None = None):
         self.stdscr = stdscr
         self.screen = Screen(stdscr)
-        self.sheet = Worksheet("A")
-        self.engine = Engine(self.sheet)
+        self.sheets: dict[str, Worksheet] = {}
+        self.sheet_order: list[str] = []
+        self.active = "A"
+        self.engines: dict[str, Engine] = {}
+        self.xdeps: dict = {}
+        self._add_sheet("A", active=True)
         self.mode = READY
         self.cur = (0, 0)
         self.top = (0, 0)
@@ -146,6 +165,124 @@ class App:
             self.load_file(filepath)
 
     # ------------------------------------------------------------------
+    # multi-sheet workbook model
+    # ------------------------------------------------------------------
+
+    @property
+    def sheet(self) -> Worksheet:
+        return self.sheets[self.active]
+
+    @property
+    def engine(self) -> Engine:
+        return self.engines[self.active]
+
+    def _add_sheet(self, name, ws=None, active=False):
+        if ws is None:
+            ws = Worksheet(name)
+        self.sheets[name] = ws
+        self.sheet_order.append(name)
+        eng = Engine(ws)
+        eng.wb = self
+        self.engines[name] = eng
+        if active:
+            self.active = name
+        return ws
+
+    def span(self, s1, s2):
+        s1, s2 = s1.upper(), s2.upper()
+        if s1 not in self.sheets:
+            return [s1]
+        if s2 not in self.sheets:
+            return [s1]
+        i, j = self.sheet_order.index(s1), self.sheet_order.index(s2)
+        if i > j:
+            i, j = j, i
+        return self.sheet_order[i:j + 1]
+
+    def switch_sheet(self, delta):
+        i = self.sheet_order.index(self.active)
+        self.active = self.sheet_order[(i + delta) % len(self.sheet_order)]
+        self.message_msg(f"Sheet {self.active}")
+
+    def cmd_insert_sheet(self):
+        i = 0
+        while col_letters(i) in self.sheets:
+            i += 1
+        name = col_letters(i)
+        ws = Worksheet(name)
+        self.sheets[name] = ws
+        eng = Engine(ws)
+        eng.wb = self
+        self.engines[name] = eng
+        pos = self.sheet_order.index(self.active)
+        self.sheet_order.insert(pos + 1, name)
+        self.active = name
+        self._rebuild_xdeps()
+        self.message_msg(f"Inserted sheet {name}")
+
+    def cmd_delete_sheet(self, name):
+        name = name.upper()
+        if name not in self.sheets:
+            self.error_msg(f"No sheet {name}")
+            return
+        if len(self.sheets) == 1:
+            self.error_msg("Cannot delete the last sheet")
+            return
+        del self.sheets[name]
+        del self.engines[name]
+        self.sheet_order.remove(name)
+        self.names = {n: v for n, v in self.names.items() if v.get("sheet") != name}
+        if self.active == name:
+            self.active = self.sheet_order[0]
+        self._rebuild_xdeps()
+        self._recalc(force=True)
+        self.message_msg(f"Deleted sheet {name}")
+
+    def _rebuild_xdeps(self):
+        xd: dict = {}
+        fkeys = [(sn, k) for sn, eng in self.engines.items() for k in eng.formulas]
+        for sname, eng in self.engines.items():
+            for key, comp in eng.formulas.items():
+                for (s1, s2, c, r) in comp.xrefs:
+                    for sn in self.span(s1, s2):
+                        xd.setdefault((sn, c, r), set()).add((sname, key))
+                for (s1, s2, c1, c2) in comp.xranges:
+                    area = (c2[0] - c1[0] + 1) * (c2[1] - c1[1] + 1)
+                    for sn in self.span(s1, s2):
+                        if area <= 65536:
+                            for c, r in range_cells(c1, c2):
+                                xd.setdefault((sn, c, r), set()).add((sname, key))
+                        else:
+                            for (fs, fk) in fkeys:
+                                if fs == sn and c1[0] <= fk[0] <= c2[0] and c1[1] <= fk[1] <= c2[1]:
+                                    xd.setdefault((sn, fk[0], fk[1]), set()).add((sname, key))
+        self.xdeps = xd
+
+    def _touch(self, sheet, key):
+        eng = self.engines.get(sheet)
+        if eng is not None:
+            eng.mark_dirty(key)
+        for (fs, fk) in self.xdeps.get((sheet, key[0], key[1]), ()):
+            feng = self.engines.get(fs)
+            if feng is not None and fk in feng.formulas:
+                feng.mark_dirty(fk)
+
+    def _register_all(self):
+        for eng in self.engines.values():
+            eng.register_all()
+        self._rebuild_xdeps()
+
+    def _recalc(self, force=False):
+        if any(eng._graph_stale for eng in self.engines.values()):
+            self._rebuild_xdeps()
+        for _ in range(max(1, len(self.engines))):
+            for eng in self.engines.values():
+                if force or eng.mode == "auto":
+                    eng.recalc(force=True)
+                else:
+                    eng.recalc(force=False)
+
+    # ------------------------------------------------------------------
     # action table
     # ------------------------------------------------------------------
 
@@ -155,6 +292,8 @@ class App:
             "copy": lambda a: self.cmd_copy(a, move=False),
             "move": lambda a: self.cmd_copy(a, move=True),
             "w_erase": lambda a: self.cmd_range_erase(split_range(a[0])),
+            "w_insert_sheet": lambda a: self.cmd_insert_sheet(),
+            "w_delete_sheet": lambda a: self.cmd_delete_sheet(a[0]),
             "w_insert_col": lambda a: self.cmd_insert_col(parse_address(a[0])[0]),
             "w_insert_row": lambda a: self.cmd_insert_row(parse_address(a[0])[1]),
             "w_delete_col": lambda a: self.cmd_delete_col(parse_address(a[0])[0]),
@@ -180,7 +319,7 @@ class App:
             "wg_col_prefix": lambda a: (setattr(self.sheet, "col_prefix", a[0]),
                                         self.message_msg("Column prefix: " + a[0])),
             "wg_zero_suppress": lambda a: setattr(self.sheet, "zero_suppress", not self.sheet.zero_suppress),
-            "wg_format": lambda a: self.message_msg("Global format set"),
+            "wg_format": lambda a: self.cmd_global_format(a[0]),
             "wg_recalc_auto": lambda a: self.set_recalc("auto", 0),
             "wg_recalc_manual": lambda a: self.set_recalc("manual", 0),
             "wg_recalc_iteration": lambda a: self.prompt_chain(
@@ -190,12 +329,12 @@ class App:
             "wg_protect_off": lambda a: setattr(self.sheet, "protection", False),
             "r_format": lambda a: self.cmd_range_format(split_range(a[0]), a[1]),
             "r_erase": lambda a: self.cmd_range_erase(split_range(a[0])),
-            "r_name_create": lambda a: self.cmd_name_create(a[0], split_range(a[1])),
+            "r_name_create": lambda a: self.cmd_name_create(a[0], a[1]),
             "r_name_delete": lambda a: self.cmd_name_delete(a[0]),
             "r_name_reset": lambda a: self.names.clear() or self.message_msg("Names reset"),
             "r_name_table": lambda a: self.message_msg(f"{len(self.names)} names"),
             "r_name_labels": lambda a: self.cmd_name_labels(split_range(a[0]), a[1].upper()),
-            "r_justify": lambda a: self.message_msg("Range justified"),
+            "r_justify": lambda a: self.cmd_range_justify(split_range(a[0])),
             "r_label": lambda a: self.cmd_range_label(split_range(a[0]), a[1].upper()),
             "r_protect": lambda a: self.cmd_range_protect(split_range(a[0]), True),
             "r_unprotect": lambda a: self.cmd_range_protect(split_range(a[0]), False),
@@ -203,6 +342,7 @@ class App:
             "r_transpose": lambda a: self.cmd_transpose(split_range(a[0]), parse_address(a[1])),
             "r_value": lambda a: self.cmd_range_value(split_range(a[0]), parse_address(a[1])),
             "r_search": lambda a: self.cmd_search(split_range(a[0]), a[1]),
+            "r_backsolve": lambda a: self.cmd_backsolve(a[0], a[1], a[2]),
             "f_save": lambda a: self.cmd_save(a[0]),
             "f_load": lambda a: self.load_file(a[0]),
             "f_combine_copy": lambda a: self.cmd_combine(a[0], split_range(a[1]), parse_address(a[2]), "copy"),
@@ -218,7 +358,7 @@ class App:
             "f_quit": lambda a: self.quit(),
             "p_printer": lambda a: self.cmd_print(a[1], dest=a[0]),
             "p_file": lambda a: self.cmd_print(a[1], dest="file:" + a[0]),
-            "p_range": lambda a: self.cmd_print(a[0], dest="printer" if a[1].upper() == "PRINTER" else "file:print.txt"),
+            "p_range": lambda a: self.cmd_print_range(a[0], a[1]),
             "p_linespage": lambda a: self.print_settings.update(lines_page=int(float(a[0]))),
             "p_margins": lambda a: self.print_settings.update(margins=(int(float(a[0])), int(float(a[1])), int(float(a[2])), int(float(a[3])))),
             "p_borders": lambda a: self.print_settings.update(borders=a[0].upper().startswith("Y")),
@@ -237,8 +377,9 @@ class App:
             "g_opt_format": lambda a: (self.graph.options.update(format=a[0]),
                                        self.message_msg("Graph format: " + a[0])),
             "g_opt_titles": lambda a: setattr(self.graph, "title", a[0]),
-            "g_opt_grid": lambda a: None,
-            "g_opt_scale": lambda a: self.message_msg("Auto scale"),
+            "g_opt_grid": lambda a: self.cmd_graph_grid(),
+            "g_opt_scale": lambda a: (self.graph.options.update(scale="auto"),
+                                       self.message_msg("Graph scale: auto")),
             "d_fill": lambda a: self.cmd_fill(a),
             "d_table1": lambda a: self.cmd_table1(split_range(a[0]), parse_address(a[1])),
             "d_table2": lambda a: self.cmd_table2(split_range(a[0]), parse_address(a[1]), parse_address(a[2])),
@@ -267,9 +408,17 @@ class App:
     def run(self):
         self.screen.init()
         self.screen.draw(self)
+        reader = None
+        if os.environ.get("DESCARTES_RAW_INPUT", "1") != "0" and hasattr(self.stdscr, "fileno"):
+            try:
+                reader = RawReader(self.stdscr.fileno())
+            except (OSError, ValueError):
+                reader = None
         while self.running:
-            ev = read_event(self.stdscr)
+            ev = reader.read_event() if reader is not None else read_event(self.stdscr)
             if ev is None:
+                if reader is not None and reader.eof:
+                    break
                 continue
             try:
                 self.handle(ev)
@@ -385,12 +534,16 @@ class App:
             self.move(c, max(0, r - 18))
         elif name == "PGDN":
             self.move(c, min(MAX_ROWS - 1, r + 18))
+        elif name == "CTRL_PGUP":
+            self.switch_sheet(-1)
+        elif name == "CTRL_PGDN":
+            self.switch_sheet(1)
         elif name == "F1":
             self.mode = HELP
         elif name == "F2":
             self.start_edit()
         elif name == "F9":
-            self.engine.recalc(force=True)
+            self._recalc(force=True)
             self.message_msg("Recalculated")
         elif name == "F10":
             self.open_menu()
@@ -458,8 +611,8 @@ class App:
         if cell is not None and cell.kind == FORMULA:
             self.engine.unregister(key)
         self.sheet.clear_cell(*key)
-        self.engine.mark_dirty(key)
-        self.engine.recalc()
+        self._touch(self.active, key)
+        self._recalc()
 
     def submit_entry(self):
         raw = self.entry
@@ -484,7 +637,8 @@ class App:
             self.error_msg(str(e))
             return
         self.engine.note_edit(key)
-        self.engine.recalc()
+        self._touch(self.active, key)
+        self._recalc()
         self.mode = READY
         self.entry = ""
         self.entry_pos = 0
@@ -632,7 +786,7 @@ class App:
                 self._actions[item.action]([])
             except Exception as e:
                 self.error_msg(str(e))
-            self.engine.recalc()
+            self._recalc()
 
     def dispatch(self, item, answers):
         handler = self._actions.get(item.action)
@@ -643,7 +797,7 @@ class App:
             handler(answers)
         except Exception as e:
             self.error_msg(str(e))
-        self.engine.recalc()
+        self._recalc()
 
     # ------------------------------------------------------------------
     # DIALOG / prompt chain
@@ -937,14 +1091,15 @@ class App:
         self.sheet.recalc_mode = mode
         self.sheet.iterations = iterations
         self.engine.sync_settings()
-        self.engine.recalc(force=True)
+        self._recalc(force=True)
         self.message_msg(f"Recalculation: {mode}" + (f" ({iterations} iterations)" if iterations else ""))
 
     def cmd_status(self):
         c, r = self.cur
         self.message_msg(
             f"{self.sheet.name}!{format_address(c, r)}  mode={self.sheet.recalc_mode}  "
-            f"cells={len(self.sheet.cells)}  recalc={'CALC' if self.engine.needs_calc() else 'ok'}")
+            f"sheets={len(self.sheets)}  cells={len(self.sheet.cells)}  "
+            f"recalc={'CALC' if self.engine.needs_calc() else 'ok'}")
 
     # ------------------------------------------------------------------
     # worksheet structural edits (adjust formula references like 1-2-3)
@@ -965,29 +1120,29 @@ class App:
     def cmd_insert_col(self, col):
         self.sheet.insert_cols(col)
         self._adjust_formula_refs("col", col, 1)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Inserted column at {col_letters(col)}")
 
     def cmd_insert_row(self, row):
         self.sheet.insert_rows(row)
         self._adjust_formula_refs("row", row, 1)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Inserted row at {row + 1}")
 
     def cmd_delete_col(self, col):
         self.sheet.delete_cols(col)
         self._adjust_formula_refs("col", col, -1, delete=True)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Deleted column at {col_letters(col)}")
 
     def cmd_delete_row(self, row):
         self.sheet.delete_rows(row)
         self._adjust_formula_refs("row", row, -1, delete=True)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Deleted row at {row + 1}")
 
     # ------------------------------------------------------------------
@@ -1001,23 +1156,11 @@ class App:
                 self.engine.unregister((c, r))
             self.sheet.clear_cell(c, r)
         self.engine.rebuild()
-        self.engine.recalc(force=True)
+        self._recalc(force=True)
         self.message_msg(f"Erased {format_range(*rng)}")
 
     def cmd_range_format(self, rng, choice):
-        kinds = {
-            "FIXED": {"type": "fixed", "decimals": 2},
-            "SCIENTIFIC": {"type": "sci", "decimals": 2},
-            "CURRENCY": {"type": "currency", "decimals": 2},
-            "PERCENT": {"type": "percent", "decimals": 0},
-            "COMMA": {"type": "comma", "decimals": 2},
-            "GENERAL": None,
-            "TEXT": {"type": "text"},
-            "DATE": {"type": "date", "style": "dd-mmm-yy"},
-            "TIME": {"type": "time", "style": "hh:mm:ss"},
-            "HIDDEN": {"type": "hidden"},
-        }
-        fmt = kinds.get(choice.upper())
+        fmt = _FORMAT_KINDS.get(choice.upper())
         for c, r in range_cells(*rng):
             cell = self.sheet.get_or_make(c, r)
             cell.fmt = fmt
@@ -1040,9 +1183,26 @@ class App:
             if cell.is_empty:
                 self.sheet.clear_cell(c, r)
 
-    def cmd_name_create(self, name, rng):
-        self.names[name.upper()] = {"sheet": self.sheet.name, "range": rng}
-        self.message_msg(f"Name {name.upper()} = {format_range(*rng)}")
+    def cmd_name_create(self, name, range_text):
+        nm = name.strip().upper()
+        if not is_valid_name(nm):
+            self.error_msg(f"Bad range name: {name}")
+            return
+        try:
+            sheets, (c1, r1), (c2, r2) = split_range_any(range_text)
+        except ValueError as e:
+            self.error_msg(str(e))
+            return
+        entry = {"sheet": self.active, "range": ((c1, r1), (c2, r2))}
+        if sheets:
+            if sheets[0] == sheets[1]:
+                entry["sheet"] = sheets[0]
+            else:
+                entry["sheets"] = [sheets[0], sheets[1]]
+        self.names[nm] = entry
+        self._rebuild_xdeps()
+        self._recalc(force=True)
+        self.message_msg(f"Name {nm} = {range_text.strip().upper()}")
 
     def cmd_name_delete(self, name):
         if name.upper() in self.names:
@@ -1059,12 +1219,24 @@ class App:
                 if isinstance(lab, str) and lab:
                     self.names[lab.upper()] = {"sheet": self.sheet.name,
                                                 "range": ((c1 + 1, r), (c2, r))}
+        elif pos == "LEFT":
+            for r in range(r1, r2 + 1):
+                lab = self.sheet.value_at(c2, r)
+                if isinstance(lab, str) and lab:
+                    self.names[lab.upper()] = {"sheet": self.sheet.name,
+                                                "range": ((c1, r), (c2 - 1, r))}
         elif pos == "TOP":
             for c in range(c1, c2 + 1):
                 lab = self.sheet.value_at(c, r1)
                 if isinstance(lab, str) and lab:
                     self.names[lab.upper()] = {"sheet": self.sheet.name,
                                                 "range": ((c, r1 + 1), (c, r2))}
+        elif pos == "BOTTOM":
+            for c in range(c1, c2 + 1):
+                lab = self.sheet.value_at(c, r2)
+                if isinstance(lab, str) and lab:
+                    self.names[lab.upper()] = {"sheet": self.sheet.name,
+                                                "range": ((c, r1), (c, r2 - 1))}
         self.message_msg(f"Names created ({pos})")
 
     def cmd_transpose(self, src, dst):
@@ -1078,8 +1250,8 @@ class App:
             if new.kind == FORMULA:
                 new.raw = shift_raw(new.raw, (dc - c1) + (r - r1), (dr - r1) + (c - c1))
             self.sheet.cells[(dc + (r - r1), dr + (c - c1))] = new
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
 
     def cmd_range_value(self, src, dst):
         from .functions import Error
@@ -1097,8 +1269,76 @@ class App:
                 self.sheet.set_entry(nc, nr, "@ERR" if v.code == "ERR" else "@NA")
             else:
                 self.sheet.set_entry(nc, nr, _fmt.general_number(float(v)))
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
+
+    def cmd_backsolve(self, target_text, value_text, var_text):
+        """Backsolver (1-2-3 3.1): set the variable cell so the target formula
+        cell reaches the desired value. Secant iteration with a bisection
+        fallback; active sheet only."""
+        t = parse_address(target_text)
+        v = parse_address(var_text)
+        try:
+            goal = float(str(value_text).replace("%", ""))
+        except ValueError:
+            self.error_msg("not a number")
+            return
+        tol = 1e-9 * max(1.0, abs(goal))
+
+        def f(x):
+            self.sheet.set_entry(v[0], v[1], _fmt.general_number(x))
+            self._touch(self.active, v)
+            self._recalc(force=True)
+            val = self.sheet.value_at(*t)
+            return val if isinstance(val, (int, float)) and not isinstance(val, bool) else None
+
+        orig = self.sheet.raw_at(*v)
+        cur = self.sheet.value_at(*v)
+        x0 = float(cur) if isinstance(cur, (int, float)) and not isinstance(cur, bool) else 0.0
+        f0 = f(x0)
+        if f0 is None:
+            self.error_msg("Target cell is not numeric")
+            return
+        if abs(f0 - goal) <= tol:
+            self.message_msg(f"Backsolved: {format_address(*v)} = {_fmt.general_number(x0)}")
+            return
+        x1 = x0 + 1.0 if x0 == 0.0 else x0 * 2.0
+        f1 = f(x1)
+        if f1 is None:
+            self.error_msg("Target cell is not numeric")
+            return
+        solved = None
+        for _ in range(100):
+            if abs(f1 - goal) <= tol:
+                solved = x1
+                break
+            if f1 == f0:
+                x1 += 1.0
+                f1 = f(x1)
+                if f1 is None:
+                    break
+                continue
+            x2 = x1 - (f1 - goal) * (x1 - x0) / (f1 - f0)
+            if not (-1e300 < x2 < 1e300):
+                break
+            x0, f0 = x1, f1
+            x1, f1 = x2, f(x2)
+            if f1 is None:
+                break
+        if solved is None and abs(f1 - goal) <= tol * 1000:
+            solved = x1
+        if solved is None:
+            if orig is not None:
+                self.sheet.set_entry(v[0], v[1], orig)
+            else:
+                self.sheet.clear_cell(*v)
+            self._touch(self.active, v)
+            self._recalc(force=True)
+            self.error_msg("Backsolver: no solution found")
+            return
+        f(solved)
+        self.message_msg(f"Backsolved: {format_address(*v)} = {_fmt.general_number(solved)} "
+                         f"({format_address(*t)} = {_fmt.general_number(goal)})")
 
     def cmd_search(self, rng, what):
         (c1, r1), (c2, r2) = rng
@@ -1118,49 +1358,104 @@ class App:
     # ------------------------------------------------------------------
 
     def cmd_copy(self, answers, move):
-        src = split_range(answers[0])
-        dst = split_range(answers[1]) if len(answers) > 1 else (self.cur, self.cur)
+        sheets_s, sc1, sc2 = split_range_any(answers[0])
+        src = (sc1, sc2)
+        if len(answers) > 1:
+            sheets_d, dc1, dc2 = split_range_any(answers[1])
+            dst = (dc1, dc2)
+        else:
+            sheets_d = None
+            dst = (self.cur, self.cur)
+        src_sheets = self.span(*sheets_s) if sheets_s else [self.active]
+        if sheets_d:
+            dst_sheets = self.span(*sheets_d)
+            if len(src_sheets) > 1 and len(dst_sheets) != len(src_sheets):
+                self.error_msg("3-D source needs a 3-D destination of the same size")
+                return
+        else:
+            dst_sheets = [self.active] * len(src_sheets)
         (c1, r1), (c2, r2) = src
         (dc1, dr1), (dc2, dr2) = dst
         sw, sh = c2 - c1 + 1, r2 - r1 + 1
         dw, dh = dc2 - dc1 + 1, dr2 - dr1 + 1
         tiles_x = max(1, dw // sw)
         tiles_y = max(1, dh // sh)
-        snapshot = None
-        if move:
-            snapshot = {k: self.sheet.cell(*k) for k in range_cells(*src)}
-            for c, r in range_cells(*src):
+        for si, sname in enumerate(src_sheets):
+            dname = dst_sheets[min(si, len(dst_sheets) - 1)]
+            sheet = self.sheets[sname]
+            dsheet = self.sheets[dname]
+            snapshot = None
+            if move:
+                snapshot = {k: sheet.cell(*k) for k in range_cells(*src)}
+                for c, r in range_cells(*src):
+                    old = sheet.cell(c, r)
+                    if old is not None and old.kind == FORMULA:
+                        self.engines[sname].unregister((c, r))
+                    sheet.clear_cell(c, r)
+            for ty in range(tiles_y):
+                for tx in range(tiles_x):
+                    ox = dc1 + tx * sw - c1
+                    oy = dr1 + ty * sh - r1
+                    for c, r in range_cells(*src):
+                        cell = snapshot.get((c, r)) if move else sheet.cell(c, r)
+                        nc, nr = c + ox, r + oy
+                        if not (0 <= nc < MAX_COLS and 0 <= nr < MAX_ROWS):
+                            continue
+                        old = dsheet.cell(nc, nr)
+                        if old is not None and old.kind == FORMULA:
+                            self.engines[dname].unregister((nc, nr))
+                        if cell is not None:
+                            new = cell.copy()
+                            if new.kind == FORMULA:
+                                try:
+                                    new.raw = shift_raw(new.raw, ox, oy)
+                                except FormulaSyntaxError:
+                                    pass
+                            dsheet.cells[(nc, nr)] = new
+                            self.engines[dname].note_edit((nc, nr))
+                        else:
+                            # copying a blank erases the destination (as in 1-2-3)
+                            dsheet.clear_cell(nc, nr)
+        self._register_all()
+        self._recalc(force=True)
+        label = answers[0].strip().upper()
+        if len(answers) > 1:
+            label += " to " + answers[1].strip().upper()
+        self.message_msg(("Moved " if move else "Copied ") + label)
+
+    def cmd_range_justify(self, rng):
+        """/RANGE JUSTIFY: rotate each row of the range one cell to the right
+        (the rightmost cell wraps to the leftmost), as in 1-2-3."""
+        (c1, r1), (c2, r2) = normalize_corners(*rng)
+        for r in range(r1, r2 + 1):
+            row = [self.sheet.cells.get((c, r)) for c in range(c1, c2 + 1)]
+            if not any(row):
+                continue
+            rotated = [row[-1]] + row[:-1]
+            for i, c in enumerate(range(c1, c2 + 1)):
+                cell = rotated[i]
                 old = self.sheet.cell(c, r)
                 if old is not None and old.kind == FORMULA:
                     self.engine.unregister((c, r))
-                self.sheet.clear_cell(c, r)
-        for ty in range(tiles_y):
-            for tx in range(tiles_x):
-                ox = dc1 + tx * sw - c1
-                oy = dr1 + ty * sh - r1
-                for c, r in range_cells(*src):
-                    cell = snapshot.get((c, r)) if move else self.sheet.cell(c, r)
-                    nc, nr = c + ox, r + oy
-                    if not (0 <= nc < MAX_COLS and 0 <= nr < MAX_ROWS):
-                        continue
-                    old = self.sheet.cell(nc, nr)
-                    if old is not None and old.kind == FORMULA:
-                        self.engine.unregister((nc, nr))
-                    if cell is not None:
-                        new = cell.copy()
-                        if new.kind == FORMULA:
-                            try:
-                                new.raw = shift_raw(new.raw, ox, oy)
-                            except FormulaSyntaxError:
-                                pass
-                        self.sheet.cells[(nc, nr)] = new
-                        self.engine.note_edit((nc, nr))
-                    else:
-                        # copying a blank erases the destination (as in 1-2-3)
-                        self.sheet.clear_cell(nc, nr)
-        self.engine.recalc(force=True)
-        self.message_msg(("Moved " if move else "Copied ") + format_range(*src) +
-                         " to " + format_range(*dst))
+                if cell is None:
+                    self.sheet.clear_cell(c, r)
+                    continue
+                new = cell.copy()
+                if new.kind == FORMULA:
+                    try:
+                        new.raw = shift_raw(new.raw, 1, 0)
+                    except FormulaSyntaxError:
+                        pass
+                self.sheet.cells[(c, r)] = new
+                self.engine.note_edit((c, r))
+        self._register_all()
+        self._recalc(force=True)
+        self.message_msg(f"Justified {format_range(*rng)}")
+
+    def cmd_global_format(self, choice):
+        self.sheet.global_fmt = _FORMAT_KINDS.get(choice.upper())
+        self._recalc(force=True)
+        self.message_msg(f"Global format: {choice.upper()}")
 
     # ------------------------------------------------------------------
     # file commands
@@ -1169,7 +1464,7 @@ class App:
     def cmd_save(self, path):
         if not path.lower().endswith(".vg1"):
             path += ".vg1"
-        persist.save_vg1(path, {self.sheet.name: self.sheet}, self.names,
+        persist.save_vg1(path, self.sheets, self.names, active=self.active,
                          cursor=self.cur, recalc_mode=self.sheet.recalc_mode,
                          iterations=self.sheet.iterations,
                          graphs=[self.graph.to_dict()] if (self.graph.series or self.graph.x_range) else [],
@@ -1185,12 +1480,18 @@ class App:
             self.error_msg(f"Cannot load: {e}")
             return
         sheets = data["sheets"]
-        self.sheet = sheets.get("A") or next(iter(sheets.values()))
-        self.engine = Engine(self.sheet)
-        self.sheet.recalc_mode = data.get("recalc_mode", "auto")
-        self.sheet.iterations = data.get("iterations", 0)
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self.sheets = {}
+        self.sheet_order = []
+        self.engines = {}
+        for name, ws in sheets.items():
+            self._add_sheet(name, ws=ws)
+        active = data.get("active") or next(iter(sheets))
+        self.active = active if active in self.sheets else self.sheet_order[0]
+        for ws in self.sheets.values():
+            ws.recalc_mode = data.get("recalc_mode", "auto")
+            ws.iterations = data.get("iterations", 0)
+        self._register_all()
+        self._recalc(force=True)
         self.names = data.get("names", {})
         c, r = data.get("cursor", (0, 0))
         self.cur = (max(0, min(MAX_COLS - 1, int(c))), max(0, min(MAX_ROWS - 1, int(r))))
@@ -1228,8 +1529,8 @@ class App:
                 base = float(cur) if isinstance(cur, (int, float)) else 0.0
                 nv = float(v) if isinstance(v, (int, float)) else 0.0
                 self.sheet.set_entry(nc, nr, _fmt.general_number(base + nv if op == "add" else base - nv))
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Combined {path} ({op})")
 
     def cmd_xtract(self, path, rng, fmt_kind):
@@ -1279,8 +1580,8 @@ class App:
             nc, nr = dc + c, dr + r
             if 0 <= nc < MAX_COLS and 0 <= nr < MAX_ROWS:
                 self.sheet.cells[(nc, nr)] = cell.copy()
-        self.engine.register_all()
-        self.engine.recalc(force=True)
+        self._register_all()
+        self._recalc(force=True)
         self.message_msg(f"Imported {path} at {format_address(dc, dr)}")
 
     # ------------------------------------------------------------------
@@ -1350,6 +1651,20 @@ class App:
     # ------------------------------------------------------------------
     # graph
     # ------------------------------------------------------------------
+
+    def cmd_graph_grid(self):
+        on = not self.graph.options.get("grid", True)
+        self.graph.options["grid"] = on
+        self.message_msg("Graph grid: " + ("on" if on else "off"))
+
+    def cmd_print_range(self, range_text, dest):
+        d = (dest or "").strip()
+        if not d or d.upper() == "PRINTER":
+            self.cmd_print(range_text, dest="printer")
+        elif d.startswith("|"):
+            self.cmd_print(range_text, dest=d)
+        else:
+            self.cmd_print(range_text, dest="file:" + d)
 
     def set_graph_type(self, t):
         self.graph.type = t

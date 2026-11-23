@@ -96,6 +96,36 @@ def tokenize(s: str) -> list[Token]:
                 raise FormulaSyntaxError(f"bad reference at {s[i:i+8]!r}")
             letters = s[j:k].upper()
             j = k
+            sheets = None
+            if j < n and s[j] == "!":
+                sheets = (letters, letters)
+                j += 1
+            elif j < n and s[j] == ":":
+                k2 = j + 1
+                if k2 < n and s[k2] == "$":
+                    k2 += 1
+                k3 = k2
+                while k3 < n and s[k3].isalpha():
+                    k3 += 1
+                if k3 == k2 or k3 >= n or s[k3] != "!":
+                    raise FormulaSyntaxError(f"bad sheet range at {s[i:i+8]!r}")
+                sheets = (letters, s[k2:k3].upper())
+                j = k3 + 1
+            if sheets is not None:
+                if j < n and s[j] == "$":
+                    abs_c = True
+                    j += 1
+                k = j
+                while k < n and s[k].isalpha():
+                    k += 1
+                if k == j:
+                    raise FormulaSyntaxError(f"bad reference at {s[i:i+8]!r}")
+                letters = s[j:k].upper()
+                j = k
+            if sheets is None and not (j < n and (s[j].isdigit() or s[j] == "$")):
+                toks.append(Token("NAME", letters, s[i:j]))
+                i = j
+                continue
             abs_r = False
             if j < n and s[j] == "$":
                 abs_r = True
@@ -103,6 +133,13 @@ def tokenize(s: str) -> list[Token]:
             k = j
             while k < n and s[k].isdigit():
                 k += 1
+            if k < n and s[k].isalpha():
+                k2 = i
+                while k2 < n and (s[k2].isalnum() or s[k2] == "$"):
+                    k2 += 1
+                toks.append(Token("NAME", s[i:k2].upper(), s[i:k2]))
+                i = k2
+                continue
             if k == j:
                 raise FormulaSyntaxError(f"bad reference at {s[i:i+8]!r}")
             digits = s[j:k]
@@ -113,7 +150,7 @@ def tokenize(s: str) -> list[Token]:
                 raise FormulaSyntaxError(str(e))
             if not 0 <= row < MAX_ROWS:
                 raise FormulaSyntaxError(f"row out of range: {digits}")
-            toks.append(Token("CELL", (col, row, abs_c, abs_r), s[i:k]))
+            toks.append(Token("CELL", (col, row, abs_c, abs_r, sheets), s[i:k]))
             i = k
             continue
         if ch == "#":
@@ -169,9 +206,12 @@ def tokenize(s: str) -> list[Token]:
 # ---------------------------------------------------------------------------
 
 class _Parser:
+    MAX_DEPTH = 100
+
     def __init__(self, toks):
         self.toks = toks
         self.pos = 0
+        self.depth = 0
 
     def peek(self) -> Token:
         return self.toks[self.pos]
@@ -260,15 +300,23 @@ class _Parser:
         if t.kind == "STR":
             self.next()
             return ("str", t.value)
+        if t.kind == "NAME":
+            self.next()
+            return ("name", t.value)
         if t.kind == "CELL":
             self.next()
-            c, r, ac, ar = t.value
+            c, r, ac, ar, sheets = t.value
             if self.peek().kind == "DOTDOT":
                 self.next()
                 t2 = self.expect("CELL")
-                c2, r2, ac2, ar2 = t2.value
+                c2, r2, ac2, ar2, sheets2 = t2.value
                 (c1, r1), (c2, r2) = normalize_corners((c, r), (c2, r2))
+                sh = sheets or sheets2
+                if sh:
+                    return ("range3d", sh, (c1, r1, ac, ar), (c2, r2, ac2, ar2))
                 return ("range", (c1, r1, ac, ar), (c2, r2, ac2, ar2))
+            if sheets:
+                return ("cell3d", sheets, c, r, ac, ar)
             return ("cell", c, r, ac, ar)
         if t.kind == "FUNC":
             self.next()
@@ -284,7 +332,11 @@ class _Parser:
             return ("func", t.value, args)
         if t.kind == "LPAREN":
             self.next()
+            self.depth += 1
+            if self.depth > self.MAX_DEPTH:
+                raise FormulaSyntaxError("formula too deeply nested")
             node = self.concat()
+            self.depth -= 1
             self.expect("RPAREN")
             return node
         raise FormulaSyntaxError(f"unexpected {t.text or t.kind!r}")
@@ -327,6 +379,57 @@ def collect_refs(node, refs: set | None = None, ranges: list | None = None):
     return refs, ranges
 
 
+def collect_xrefs(node, xrefs: list | None = None, xranges: list | None = None):
+    """3-D (sheet-qualified) refs -> (list of (s1, s2, col, row),
+    list of (s1, s2, corner1, corner2)) for cross-sheet dependency tracking."""
+    if xrefs is None:
+        xrefs = []
+    if xranges is None:
+        xranges = []
+    kind = node[0]
+    if kind == "cell3d":
+        xrefs.append((node[1][0], node[1][1], node[2], node[3]))
+    elif kind == "range3d":
+        (c1, r1, _, _), (c2, r2, _, _) = node[2], node[3]
+        xranges.append((node[1][0], node[1][1], (c1, r1), (c2, r2)))
+    elif kind == "bin":
+        collect_xrefs(node[2], xrefs, xranges)
+        collect_xrefs(node[3], xrefs, xranges)
+    elif kind == "un":
+        collect_xrefs(node[2], xrefs, xranges)
+    elif kind == "pct":
+        collect_xrefs(node[1], xrefs, xranges)
+    elif kind == "func":
+        for a in node[2]:
+            collect_xrefs(a, xrefs, xranges)
+    return xrefs, xranges
+
+
+def _sheet_prefix(sheets) -> str:
+    s1, s2 = sheets
+    return f"{s1}!" if s1 == s2 else f"{s1}:{s2}!"
+
+
+def collect_names(node, names: list | None = None):
+    """-> list of range-name references in the AST (resolved at register/eval)."""
+    if names is None:
+        names = []
+    kind = node[0]
+    if kind == "name":
+        names.append(node[1])
+    elif kind == "bin":
+        collect_names(node[2], names)
+        collect_names(node[3], names)
+    elif kind == "un":
+        collect_names(node[2], names)
+    elif kind == "pct":
+        collect_names(node[1], names)
+    elif kind == "func":
+        for a in node[2]:
+            collect_names(a, names)
+    return names
+
+
 def _ser_cell(c, r, ac, ar) -> str:
     return ("$" if ac else "") + col_letters(c) + ("$" if ar else "") + str(r + 1)
 
@@ -337,10 +440,16 @@ def serialize(node) -> str:
         return node[2]
     if kind == "str":
         return '"' + node[1].replace('"', '""') + '"'
+    if kind == "name":
+        return node[1]
     if kind == "cell":
         return _ser_cell(node[1], node[2], node[3], node[4])
+    if kind == "cell3d":
+        return _sheet_prefix(node[1]) + _ser_cell(node[2], node[3], node[4], node[5])
     if kind == "range":
         return _ser_cell(*node[1]) + ".." + _ser_cell(*node[2])
+    if kind == "range3d":
+        return _sheet_prefix(node[1]) + _ser_cell(*node[2]) + ".." + _ser_cell(*node[3])
     if kind == "bin":
         op = node[1]
         op_text = {"AND": "#AND#", "OR": "#OR#"}.get(op, op)
@@ -354,25 +463,29 @@ def serialize(node) -> str:
     raise FormulaSyntaxError(f"cannot serialize {kind}")
 
 
+def _shift_corner(corner, dc, dr):
+    c, r, ac, ar = corner
+    return (c if ac else min(max(c + dc, 0), MAX_COLS - 1),
+            r if ar else min(max(r + dr, 0), MAX_ROWS - 1), ac, ar)
+
+
 def shift(node, dc: int, dr: int):
     """Return a copy of the AST with relative refs shifted by (dc, dr).
 
-    Absolute ($-marked) components are preserved.
+    Absolute ($-marked) components are preserved. Sheet spans are kept.
     """
     kind = node[0]
-    if kind == "num" or kind == "str":
+    if kind in ("num", "str", "name"):
         return node
     if kind == "cell":
-        c, r, ac, ar = node[1], node[2], node[3], node[4]
-        return ("cell", c if ac else min(max(c + dc, 0), MAX_COLS - 1),
-                r if ar else min(max(r + dr, 0), MAX_ROWS - 1), ac, ar)
+        return ("cell",) + _shift_corner(node[1:], dc, dr)
+    if kind == "cell3d":
+        return ("cell3d", node[1], *_shift_corner(node[2:], dc, dr))
     if kind == "range":
-        (c1, r1, ac1, ar1), (c2, r2, ac2, ar2) = node[1], node[2]
-        nc1 = c1 if ac1 else min(max(c1 + dc, 0), MAX_COLS - 1)
-        nr1 = r1 if ar1 else min(max(r1 + dr, 0), MAX_ROWS - 1)
-        nc2 = c2 if ac2 else min(max(c2 + dc, 0), MAX_COLS - 1)
-        nr2 = r2 if ar2 else min(max(r2 + dr, 0), MAX_ROWS - 1)
-        return ("range", (nc1, nr1, ac1, ar1), (nc2, nr2, ac2, ar2))
+        return ("range", _shift_corner(node[1], dc, dr), _shift_corner(node[2], dc, dr))
+    if kind == "range3d":
+        return ("range3d", node[1], _shift_corner(node[2], dc, dr),
+                _shift_corner(node[3], dc, dr))
     if kind == "bin":
         return ("bin", node[1], shift(node[2], dc, dr), shift(node[3], dc, dr))
     if kind == "un":
@@ -434,6 +547,8 @@ def adjust_refs(node, axis: str, pos: int, delta: int, delete: bool = False):
         return (c, nv, ac, ar)
 
     kind = node[0]
+    if kind == "name":
+        return node
     if kind == "cell":
         c, r, ac, ar = node[1], node[2], node[3], node[4]
         nv = adj(c if axis == "col" else r)
@@ -444,6 +559,16 @@ def adjust_refs(node, axis: str, pos: int, delta: int, delete: bool = False):
         return ("cell", c, nv, ac, ar)
     if kind == "range":
         return ("range", adj_corner(node[1]), adj_corner(node[2]))
+    if kind == "cell3d":
+        c, r, ac, ar = node[2], node[3], node[4], node[5]
+        nv = adj(c if axis == "col" else r)
+        if nv is None:
+            return ("func", "ERR", [])
+        if axis == "col":
+            return ("cell3d", node[1], nv, r, ac, ar)
+        return ("cell3d", node[1], c, nv, ac, ar)
+    if kind == "range3d":
+        return ("range3d", node[1], adj_corner(node[2]), adj_corner(node[3]))
     if kind == "bin":
         return ("bin", node[1], adjust_refs(node[2], axis, pos, delta, delete),
                 adjust_refs(node[3], axis, pos, delta, delete))
@@ -461,13 +586,15 @@ def adjust_refs(node, axis: str, pos: int, delta: int, delete: bool = False):
 # ---------------------------------------------------------------------------
 
 class RangeValue:
-    """A range used inside a formula. Lazy; resolves to scalars on demand."""
+    """A range used inside a formula. Lazy; resolves to scalars on demand.
+    `sheet` pins the range to another sheet (named range on sheet B)."""
 
-    __slots__ = ("ctx", "c1", "r1", "c2", "r2")
+    __slots__ = ("ctx", "c1", "r1", "c2", "r2", "sheet")
 
-    def __init__(self, ctx, c1, r1, c2, r2):
+    def __init__(self, ctx, c1, r1, c2, r2, sheet=None):
         self.ctx = ctx
         self.c1, self.r1, self.c2, self.r2 = c1, r1, c2, r2
+        self.sheet = sheet
 
     @property
     def corners(self):
@@ -478,24 +605,75 @@ class RangeValue:
             for c in range(self.c1, self.c2 + 1):
                 yield c, r
 
+    def _val(self, ctx, c, r):
+        if self.sheet is not None:
+            return ctx.val_sheet(self.sheet, c, r)
+        return ctx.val(c, r)
+
     def values(self):
         for c, r in self.cells():
-            yield self.ctx.val(c, r)
+            yield self._val(self.ctx, c, r)
 
     def scalar(self, ctx=None):
         ctx = ctx or self.ctx
         fc, fr = ctx.fkey
         c1, r1, c2, r2 = self.c1, self.r1, self.c2, self.r2
         if c1 <= fc <= c2 and r1 <= fr <= r2:
-            return ctx.val(fc, fr)
+            return self._val(ctx, fc, fr)
         if r1 == r2 and c1 <= fc <= c2:
-            return ctx.val(fc, r1)
+            return self._val(ctx, fc, r1)
         if c1 == c2 and r1 <= fr <= r2:
-            return ctx.val(c1, fr)
-        return ctx.val(c1, r1)
+            return self._val(ctx, c1, fr)
+        return self._val(ctx, c1, r1)
 
     def __repr__(self):  # pragma: no cover
         return f"RangeValue({col_letters(self.c1)}{self.r1+1}..{col_letters(self.c2)}{self.r2+1})"
+
+
+class Range3D:
+    """A sheet-spanning range (A:C!A1..B2). Aggregates across the sheets in the
+    span; in scalar context resolves like 1-2-3: the active sheet if it is in
+    the span, otherwise the first sheet of the span."""
+
+    __slots__ = ("ctx", "s1", "s2", "c1", "r1", "c2", "r2")
+
+    def __init__(self, ctx, s1, s2, c1, r1, c2, r2):
+        self.ctx = ctx
+        self.s1, self.s2 = s1, s2
+        self.c1, self.r1, self.c2, self.r2 = c1, r1, c2, r2
+
+    @property
+    def corners(self):
+        return self.c1, self.r1, self.c2, self.r2
+
+    def sheets(self):
+        wb = getattr(self.ctx.engine, "wb", None)
+        if wb is None:
+            return [self.s1]
+        return wb.span(self.s1, self.s2)
+
+    def cells(self):
+        wb = self.ctx.engine.wb
+        for sn in self.sheets():
+            ws = wb.sheets.get(sn)
+            if ws is None:
+                continue
+            for r in range(self.r1, self.r2 + 1):
+                for c in range(self.c1, self.c2 + 1):
+                    yield sn, c, r
+
+    def values(self):
+        wb = self.ctx.engine.wb
+        for sn, c, r in self.cells():
+            cell = wb.sheets[sn].cells.get((c, r))
+            yield cell.value if cell is not None else None
+
+    def scalar(self, ctx=None):
+        ctx = ctx or self.ctx
+        return ctx.val3d(self.s1, self.s2, self.c1, self.r1)
+
+    def __repr__(self):  # pragma: no cover
+        return f"Range3D({self.s1}:{self.s2}!{self.c1},{self.r1}..{self.c2},{self.r2})"
 
 
 class RefVal:
@@ -518,6 +696,42 @@ class Ctx:
 
     def val(self, c, r):
         return self.engine.value(c, r)
+
+    def val_sheet(self, sheet, c, r):
+        wb = getattr(self.engine, "wb", None)
+        if wb is None or sheet is None or sheet == wb.active:
+            return self.engine.value(c, r)
+        ws = wb.sheets.get(sheet)
+        if ws is None:
+            return None
+        cell = ws.cells.get((c, r))
+        return cell.value if cell is not None else None
+
+    def resolve_name(self, name):
+        from .functions import ERR
+        wb = getattr(self.engine, "wb", None)
+        names = getattr(wb, "names", None) if wb is not None else None
+        entry = names.get(name.upper()) if names else None
+        if entry is None:
+            return ERR
+        (c1, r1), (c2, r2) = entry["range"]
+        sheets = entry.get("sheets")
+        if sheets:
+            return Range3D(self, sheets[0], sheets[1], c1, r1, c2, r2)
+        sheet = entry.get("sheet")
+        return RangeValue(self, c1, r1, c2, r2, sheet=sheet)
+
+    def val3d(self, s1, s2, c, r):
+        wb = getattr(self.engine, "wb", None)
+        if wb is None:
+            return self.engine.value(c, r)
+        names = wb.span(s1, s2)
+        pick = wb.active if wb.active in names else names[0]
+        ws = wb.sheets.get(pick)
+        if ws is None:
+            return None
+        cell = ws.cells.get((c, r))
+        return cell.value if cell is not None else None
 
 
 def _scalar(v, ctx):
@@ -608,6 +822,16 @@ def compile_node(node):
     if kind == "range":
         (c1, r1, _, _), (c2, r2, _, _) = node[1], node[2]
         return lambda ctx: RangeValue(ctx, c1, r1, c2, r2)
+    if kind == "cell3d":
+        s1, s2, c, r = node[1][0], node[1][1], node[2], node[3]
+        return lambda ctx: ctx.val3d(s1, s2, c, r)
+    if kind == "range3d":
+        s1, s2 = node[1]
+        (c1, r1, _, _), (c2, r2, _, _) = node[2], node[3]
+        return lambda ctx: Range3D(ctx, s1, s2, c1, r1, c2, r2)
+    if kind == "name":
+        nm = node[1]
+        return lambda ctx: ctx.resolve_name(nm)
     if kind == "bin":
         op = node[1]
         fl = compile_node(node[2])
@@ -634,6 +858,10 @@ def compile_node(node):
                     parts.append(("static", RefVal(a[1], a[2])))
                 elif a[0] == "range":
                     parts.append(("static", RefVal(a[1][0], a[1][1])))
+                elif a[0] == "cell3d":
+                    parts.append(("static", RefVal(a[2], a[3])))
+                elif a[0] == "range3d":
+                    parts.append(("static", RefVal(a[2][0], a[2][1])))
                 else:
                     parts.append(("fn", compile_node(a)))
 
@@ -684,13 +912,14 @@ def _pct(v, ctx):
 
 
 class Compiled:
-    __slots__ = ("raw", "ast", "fn", "refs", "ranges")
+    __slots__ = ("raw", "ast", "fn", "refs", "ranges", "xrefs", "xranges")
 
     def __init__(self, raw, ast):
         self.raw = raw
         self.ast = ast
         self.fn = compile_node(ast)
         self.refs, self.ranges = collect_refs(ast)
+        self.xrefs, self.xranges = collect_xrefs(ast)
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +940,7 @@ class Engine:
         self.mode = "auto"
         self.iterations = 0
         self._graph_stale = True
+        self.wb = None       # workbook facade (App) for 3-D refs; None = single sheet
 
     # -- settings -----------------------------------------------------------
 
@@ -733,7 +963,23 @@ class Engine:
             self.formulas.pop(key, None)
             self._graph_stale = True
             return False
-        self.formulas[key] = Compiled(cell.raw, ast)
+        comp = Compiled(cell.raw, ast)
+        wb = self.wb
+        if wb is not None:
+            for nm in collect_names(ast):
+                entry = wb.names.get(nm)
+                if not entry:
+                    continue
+                (c1, r1), (c2, r2) = entry["range"]
+                sheets = entry.get("sheets")
+                if sheets:
+                    comp.xranges.append((sheets[0], sheets[1], (c1, r1), (c2, r2)))
+                elif entry.get("sheet") == self.sheet.name:
+                    comp.ranges.append(((c1, r1), (c2, r2)))
+                else:
+                    sh = entry.get("sheet", "")
+                    comp.xranges.append((sh, sh, (c1, r1), (c2, r2)))
+        self.formulas[key] = comp
         self._graph_stale = True
         self.dirty.add(key)
         return True
