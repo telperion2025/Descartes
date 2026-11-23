@@ -355,3 +355,48 @@ class TestGlobalFormat:
         assert app.sheet.global_fmt == {"type": "percent", "decimals": 0}
         app._actions["wg_format"](["GENERAL"])
         assert app.sheet.global_fmt is None
+
+
+class TestBacksolve:
+    def test_linear(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "2")
+        app.sheet.set_entry(1, 0, "+A1*3")
+        app._register_all()
+        app._recalc(force=True)
+        app.cmd_backsolve("B1", "30", "A1")
+        assert app.error == ""
+        assert abs(app.sheet.value_at(0, 0) - 10.0) < 1e-9
+        assert app.sheet.value_at(1, 0) == 30.0
+
+    def test_quadratic(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "3")
+        app.sheet.set_entry(1, 0, "+A1^2")
+        app._register_all()
+        app._recalc(force=True)
+        app.cmd_backsolve("B1", "16", "A1")
+        assert app.error == ""
+        assert abs(app.sheet.value_at(1, 0) - 16.0) < 1e-6
+        assert abs(abs(app.sheet.value_at(0, 0)) - 4.0) < 1e-6
+
+    def test_no_dependency_reports_error(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(2, 0, "5")
+        app.sheet.set_entry(1, 0, "+C1")
+        app._register_all()
+        app._recalc(force=True)
+        app.cmd_backsolve("B1", "99", "A1")
+        assert app.error != ""
+        assert app.sheet.cell(0, 0) is None   # variable cell restored on failure
+
+    def test_non_numeric_target_reports_error(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(1, 0, "hello")
+        app.cmd_backsolve("B1", "5", "A1")
+        assert "not numeric" in app.error
+
+    def test_menu_entry_exists(self):
+        from descartes.menus import MENU_TREE
+        rng = next(m for m in MENU_TREE if m.label == "RANGE")
+        assert any(m.label == "BACKSOLVE" for m in rng.children)

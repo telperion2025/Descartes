@@ -342,6 +342,7 @@ class App:
             "r_transpose": lambda a: self.cmd_transpose(split_range(a[0]), parse_address(a[1])),
             "r_value": lambda a: self.cmd_range_value(split_range(a[0]), parse_address(a[1])),
             "r_search": lambda a: self.cmd_search(split_range(a[0]), a[1]),
+            "r_backsolve": lambda a: self.cmd_backsolve(a[0], a[1], a[2]),
             "f_save": lambda a: self.cmd_save(a[0]),
             "f_load": lambda a: self.load_file(a[0]),
             "f_combine_copy": lambda a: self.cmd_combine(a[0], split_range(a[1]), parse_address(a[2]), "copy"),
@@ -1257,6 +1258,74 @@ class App:
                 self.sheet.set_entry(nc, nr, _fmt.general_number(float(v)))
         self._register_all()
         self._recalc(force=True)
+
+    def cmd_backsolve(self, target_text, value_text, var_text):
+        """Backsolver (1-2-3 3.1): set the variable cell so the target formula
+        cell reaches the desired value. Secant iteration with a bisection
+        fallback; active sheet only."""
+        t = parse_address(target_text)
+        v = parse_address(var_text)
+        try:
+            goal = float(str(value_text).replace("%", ""))
+        except ValueError:
+            self.error_msg("not a number")
+            return
+        tol = 1e-9 * max(1.0, abs(goal))
+
+        def f(x):
+            self.sheet.set_entry(v[0], v[1], _fmt.general_number(x))
+            self._touch(self.active, v)
+            self._recalc(force=True)
+            val = self.sheet.value_at(*t)
+            return val if isinstance(val, (int, float)) and not isinstance(val, bool) else None
+
+        orig = self.sheet.raw_at(*v)
+        cur = self.sheet.value_at(*v)
+        x0 = float(cur) if isinstance(cur, (int, float)) and not isinstance(cur, bool) else 0.0
+        f0 = f(x0)
+        if f0 is None:
+            self.error_msg("Target cell is not numeric")
+            return
+        if abs(f0 - goal) <= tol:
+            self.message_msg(f"Backsolved: {format_address(*v)} = {_fmt.general_number(x0)}")
+            return
+        x1 = x0 + 1.0 if x0 == 0.0 else x0 * 2.0
+        f1 = f(x1)
+        if f1 is None:
+            self.error_msg("Target cell is not numeric")
+            return
+        solved = None
+        for _ in range(100):
+            if abs(f1 - goal) <= tol:
+                solved = x1
+                break
+            if f1 == f0:
+                x1 += 1.0
+                f1 = f(x1)
+                if f1 is None:
+                    break
+                continue
+            x2 = x1 - (f1 - goal) * (x1 - x0) / (f1 - f0)
+            if not (-1e300 < x2 < 1e300):
+                break
+            x0, f0 = x1, f1
+            x1, f1 = x2, f(x2)
+            if f1 is None:
+                break
+        if solved is None and abs(f1 - goal) <= tol * 1000:
+            solved = x1
+        if solved is None:
+            if orig is not None:
+                self.sheet.set_entry(v[0], v[1], orig)
+            else:
+                self.sheet.clear_cell(*v)
+            self._touch(self.active, v)
+            self._recalc(force=True)
+            self.error_msg("Backsolver: no solution found")
+            return
+        f(solved)
+        self.message_msg(f"Backsolved: {format_address(*v)} = {_fmt.general_number(solved)} "
+                         f"({format_address(*t)} = {_fmt.general_number(goal)})")
 
     def cmd_search(self, rng, what):
         (c1, r1), (c2, r2) = rng

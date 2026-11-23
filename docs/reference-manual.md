@@ -221,6 +221,9 @@ becomes `@ERR()` (`engine.adjust_refs`).
         | DELETE (name) | LABELS (range, LEFT/RIGHT/TOP/BOTTOM) | RESET | TABLE
   PROTECT | UNPROTECT (range) | INPUT (range)
   TRANSPOSE (range, dest cell) | VALUE (range, dest cell) | SEARCH (range, text)
+  BACKSOLVE (target cell, target value, variable cell; secant goal-seek on the
+        active sheet — sets the variable cell so the target formula hits the value;
+        restores the variable cell and reports an error when no solution exists)
 /COPY | /MOVE                  (source range, dest anchor/range; tiling on multiples;
         source/dest may be sheet-qualified `B!A1..B2` or 3-D `A:C!A1..B2` — a 3-D source
         copies sheet-by-sheet onto a 3-D destination of the same size, or onto the
@@ -383,6 +386,7 @@ The acceptance walkthrough of the spec is driven end-to-end in
 
 ## 13. Non-goals
 
-Macros (3.1 `{commands}`), multi-sheet printing, backsolver, mouse column-resize
-handles, color beyond text modes, multi-line cells. (Multi-sheet workbooks and 3-D
-ranges are implemented: `/WORKSHEET INSERT/DELETE SHEET`, Ctrl+PgUp/PgDn, `A:C!A1..B2`.)
+Macros (3.1 `{commands}`), multi-sheet printing, mouse column-resize handles, color
+beyond text modes, multi-line cells. (Multi-sheet workbooks, 3-D ranges, named ranges
+in formulas, cross-sheet /COPY, and /RANGE BACKSOLVE are implemented:
+`/WORKSHEET INSERT/DELETE SHEET`, Ctrl+PgUp/PgDn, `A:C!A1..B2`, `/RANGE BACKSOLVE`.)

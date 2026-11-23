@@ -116,6 +116,10 @@ MENU_TREE = [
                                              {"text": "Destination:", "kind": "cell"}]),
         _m("SEARCH", action="r_search", prompt=[{"text": "Search range:", "kind": "range"},
                                                {"text": "Find what:", "kind": "text"}]),
+        _m("BACKSOLVE", action="r_backsolve", prompt=[
+            {"text": "Cell to solve:", "kind": "cell"},
+            {"text": "Target value:", "kind": "number"},
+            {"text": "Variable cell:", "kind": "cell"}]),
     ]),
     _m("COPY", action="copy", prompt=[{"text": "Copy from:", "kind": "range"},
                                       {"text": "To:", "kind": "cell"}]),
