@@ -141,10 +141,18 @@ class TestRecalc:
         ws, _ = make_ws({(0, 0): "1", (1, 0): "10", (2, 0): "100",
                          (1, 4): "+A1..C1"})
         assert val(ws, "B5") == 10.0
-        # multi-row range not covering the formula row -> first cell fallback
+        # formula column intersects a multi-row range -> that column, clamped row
         ws2, _ = make_ws({(0, 0): "1", (0, 1): "2", (1, 0): "10", (1, 1): "20",
                           (0, 5): "+A1..B2"})
-        assert val(ws2, "A6") == 1.0
+        assert val(ws2, "A6") == 2.0
+        # formula row intersects but column outside -> clamped column (B1)
+        ws3, _ = make_ws({(0, 0): "1", (0, 1): "2", (1, 0): "10", (1, 1): "20",
+                          (2, 0): "+A1..B2"})
+        assert val(ws3, "C1") == 10.0
+        # neither row nor column intersects -> first cell
+        ws4, _ = make_ws({(0, 0): "1", (0, 1): "2", (1, 0): "10", (1, 1): "20",
+                          (2, 5): "+A1..B2"})
+        assert val(ws4, "C6") == 1.0
 
     def test_blank_is_zero(self):
         ws, _ = make_ws({(0, 0): "+A2+5"})

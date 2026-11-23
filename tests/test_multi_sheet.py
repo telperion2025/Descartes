@@ -293,12 +293,20 @@ class TestCrossSheetCopyMove:
         assert app.sheets["A"].value_at(2, 0) == 1.0
         assert app.sheets["B"].value_at(2, 0) == 2.0
 
-    def test_copy_3d_source_to_2d_dest_replicates(self, make_app):
+    def test_copy_3d_source_to_2d_dest_is_error(self, make_app):
         app, win = make_app()
         app.sheets["A"].set_entry(0, 0, "1")
         app.cmd_insert_sheet()                      # B
         app.sheet.set_entry(0, 0, "2")
-        app.cmd_copy(["A:B!A1..A1", "C1"], move=False)   # 2-D dst: lands on active sheet
+        app.cmd_copy(["A:B!A1..A1", "C1"], move=False)   # 2-D dst: rejected
+        assert "3-D" in app.error
+        assert app.sheets["B"].value_at(2, 0) is None
+
+    def test_copy_single_sheet_3d_source_to_2d_dest(self, make_app):
+        app, win = make_app()
+        app.cmd_insert_sheet()                      # B (active)
+        app.sheet.set_entry(0, 0, "2")
+        app.cmd_copy(["B!A1..A1", "C1"], move=False)
         assert app.sheets["B"].value_at(2, 0) == 2.0
 
     def test_move_cross_sheet_clears_source(self, make_app):

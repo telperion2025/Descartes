@@ -345,7 +345,7 @@ class Screen:
         inds.append("NUM" if app.numlock else "   ")
         inds.append("SCRL" if app.scroll_lock else "    ")
         inds.append("CALC" if app.engine.needs_calc() else "    ")
-        inds.append("   ")
+        inds.append("MEM" if app.mem_bytes() > 512 * 1024 else "   ")
         inds.append("OVR" if app.overwrite else "INS")
         left = " ".join(inds)
         now = datetime.datetime.now()

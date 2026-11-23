@@ -16,8 +16,8 @@ from . import fmt as _fmt
 from . import graph as _graph
 from . import macro as _macro
 from . import persist
-from .engine import (Engine, FormulaSyntaxError, adjust_refs, parse, serialize,
-                     shift_raw)
+from .engine import (Engine, FormulaSyntaxError, adjust_refs, narrow_sheets,
+                     parse, serialize, span_names, shift_raw)
 from .grid import (EMPTY, FORMULA, LABEL, MAX_COLS, MAX_ROWS, NUMBER, Worksheet,
                    classify_entry, col_letters, format_address, format_range,
                    is_valid_name, normalize_corners, parse_address, range_cells,
@@ -157,6 +157,8 @@ class App:
         self.mouse_parser = MouseParser()
         self.sel_range = None
         self._drag_anchor = None
+        self._resize_col = None
+        self.input_range = None
         self.sort_state = {"range": None, "keys": []}
         self.query_state = {"input": None, "criterion": None, "output": None,
                             "unique": False}
@@ -229,12 +231,34 @@ class App:
         if len(self.sheets) == 1:
             self.error_msg("Cannot delete the last sheet")
             return
+        order = list(self.sheet_order)
+        for sn, ws in self.sheets.items():
+            for key, cell in list(ws.cells.items()):
+                if cell.kind == FORMULA and cell.raw:
+                    try:
+                        ast = parse(cell.raw)
+                    except FormulaSyntaxError:
+                        continue
+                    new = narrow_sheets(ast, name, order, sn)
+                    cell.raw = "+" + serialize(new)
+        for n, entry in list(self.names.items()):
+            sheets = entry.get("sheets")
+            if sheets:
+                rest = [s for s in span_names(sheets[0], sheets[1], order) if s != name]
+                if not rest:
+                    del self.names[n]
+                elif len(rest) == 1:
+                    entry["sheet"] = rest[0]
+                    del entry["sheets"]
+                else:
+                    entry["sheets"] = [rest[0], rest[-1]]
         del self.sheets[name]
         del self.engines[name]
         self.sheet_order.remove(name)
         self.names = {n: v for n, v in self.names.items() if v.get("sheet") != name}
         if self.active == name:
             self.active = self.sheet_order[0]
+        self._register_all()
         self._rebuild_xdeps()
         self._recalc(force=True)
         self.message_msg(f"Deleted sheet {name}")
@@ -339,7 +363,7 @@ class App:
             "r_label": lambda a: self.cmd_range_label(split_range(a[0]), a[1].upper()),
             "r_protect": lambda a: self.cmd_range_protect(split_range(a[0]), True),
             "r_unprotect": lambda a: self.cmd_range_protect(split_range(a[0]), False),
-            "r_input": lambda a: self.message_msg("Input range set"),
+            "r_input": lambda a: self.cmd_range_input(split_range(a[0])),
             "r_transpose": lambda a: self.cmd_transpose(split_range(a[0]), parse_address(a[1])),
             "r_value": lambda a: self.cmd_range_value(split_range(a[0]), parse_address(a[1])),
             "r_search": lambda a: self.cmd_search(split_range(a[0]), a[1]),
@@ -399,7 +423,7 @@ class App:
             "d_frequency": lambda a: self.cmd_frequency(a),
             "d_regression": lambda a: self.cmd_regression(split_range(a[0]), split_range(a[1]), parse_address(a[2])),
             "system": lambda a: self.cmd_system(a[0]),
-            "addin": lambda a: self.error_msg("No add-ins loaded"),
+            "addin": lambda a: self.error_msg("Add-ins (.add) are not supported"),
         })
 
     # ------------------------------------------------------------------
@@ -906,6 +930,12 @@ class App:
                 self.scroll(delta)
             return
         if m.release or m.button == 3:
+            if m.release and self._resize_col is not None:
+                self._resize_col = None
+            return
+        if self._resize_col is not None and m.drag:
+            c, x0 = self._resize_col
+            self.sheet.set_col_width(c, max(1, min(240, m.x - x0 + 1)))
             return
         x, y = m.x, m.y
         if self.mode == MENU:
@@ -920,6 +950,8 @@ class App:
             if c is not None:
                 if count >= 2:
                     self.autofit_col(c)
+                elif self.col_x(c, pane) + self.sheet.col_width(c) - 1 == x:
+                    self._resize_col = (c, self.col_x(c, pane))
                 else:
                     self.move(c, self.cur[1])
             return
@@ -999,6 +1031,15 @@ class App:
             xx += cw
             c += 1
         return None
+
+    def col_x(self, c, pane=None):
+        pane = pane or self.pane_layout()[0]
+        xx = pane["x0"] + GUTTER_W
+        cc = pane["top"][0]
+        while cc < c:
+            xx += self.sheet.col_width(cc)
+            cc += 1
+        return xx
 
     def row_at_y(self, y, pane=None):
         pane = pane or self.pane_layout()[0]
@@ -1396,6 +1437,9 @@ class App:
                 self.error_msg("3-D source needs a 3-D destination of the same size")
                 return
         else:
+            if len(src_sheets) > 1:
+                self.error_msg("Cannot copy a 3-D range to a 2-D destination")
+                return
             dst_sheets = [self.active] * len(src_sheets)
         (c1, r1), (c2, r2) = src
         (dc1, dr1), (dc2, dr2) = dst
@@ -1445,6 +1489,17 @@ class App:
         if len(answers) > 1:
             label += " to " + answers[1].strip().upper()
         self.message_msg(("Moved " if move else "Copied ") + label)
+
+    def cmd_range_input(self, rng):
+        self.input_range = rng
+        self.message_msg(f"Input range: {format_range(*rng)}")
+
+    def mem_bytes(self):
+        total = 0
+        for ws in self.sheets.values():
+            for cell in ws.cells.values():
+                total += 64 + len(cell.raw or "")
+        return total
 
     def cmd_range_justify(self, rng):
         """/RANGE JUSTIFY: rotate each row of the range one cell to the right
@@ -1611,9 +1666,10 @@ class App:
     # print
     # ------------------------------------------------------------------
 
-    def render_print(self, rng):
+    def render_print(self, rng, sheet=None):
+        sheet = sheet or self.sheet
         (c1, r1), (c2, r2) = normalize_corners(*rng)
-        widths = [max(3, self.sheet.col_width(c)) for c in range(c1, c2 + 1)]
+        widths = [max(3, sheet.col_width(c)) for c in range(c1, c2 + 1)]
         lines = []
         if self.print_settings.get("header"):
             lines.append(self.print_settings["header"])
@@ -1624,10 +1680,10 @@ class App:
         for r in range(r1, r2 + 1):
             row = []
             for i, c in enumerate(range(c1, c2 + 1)):
-                cell = self.sheet.cell(c, r)
+                cell = sheet.cell(c, r)
                 text = ""
                 if cell is not None:
-                    f = cell.fmt or self.sheet.global_fmt
+                    f = cell.fmt or sheet.global_fmt
                     text = _fmt.display(cell.value, f)
                     if isinstance(cell.value, str) or cell.kind == LABEL:
                         text = text.ljust(widths[i])
@@ -1640,8 +1696,20 @@ class App:
         return lines
 
     def cmd_print(self, range_text, dest):
-        rng = split_range(range_text)
-        lines = self.render_print(rng)
+        sheets, c1, c2 = split_range_any(range_text)
+        if sheets is None:
+            lines = self.render_print((c1, c2))
+        else:
+            lines = []
+            for sn in self.span(*sheets):
+                ws = self.sheets.get(sn)
+                if ws is None:
+                    continue
+                if len(lines):
+                    lines.append("")
+                lines.append(f"Sheet {sn}")
+                lines.append("")
+                lines.extend(self.render_print((c1, c2), sheet=ws))
         payload = "\n".join(lines) + "\n"
         if dest.startswith("file:"):
             path = dest[5:]
