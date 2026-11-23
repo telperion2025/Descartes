@@ -14,6 +14,7 @@ import time
 from . import data_cmd
 from . import fmt as _fmt
 from . import graph as _graph
+from . import macro as _macro
 from . import persist
 from .engine import (Engine, FormulaSyntaxError, adjust_refs, parse, serialize,
                      shift_raw)
@@ -449,6 +450,10 @@ class App:
         if ch == "\x11" or name == "ALT+q":   # Ctrl+Q / Alt+Q quits
             self.quit()
             return
+        if name and name.startswith("ALT+") and self.mode == READY:
+            letter = name[4:]
+            if len(letter) == 1 and letter.isalpha() and self.run_macro_letter(letter):
+                return
         mode = self.mode
         if mode in (VALUE, LABEL, EDIT, DIALOG):
             if ch in ("\r", "\n"):
@@ -744,6 +749,24 @@ class App:
     def open_menu(self):
         self.mode = MENU
         self.menu.open()
+
+    def run_macro_letter(self, letter):
+        """Alt+letter runs the macro named by a single-letter range name
+        (1-2-3 macro-key assignment) whose target cell starts with '{'."""
+        entry = self.names.get(letter.upper())
+        if not entry:
+            return False
+        (c1, r1), (c2, r2) = entry["range"]
+        if (c1, r1) != (c2, r2):
+            return False
+        if entry.get("sheet") and entry["sheet"] != self.active:
+            return False
+        try:
+            _macro.MacroRunner(self).run_cell((c1, r1))
+        except _macro.MacroError as e:
+            self.error_msg(f"Macro: {e}")
+        self._recalc(force=True)
+        return True
 
     def menu_key(self, name):
         if name == "LEFT":

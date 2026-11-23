@@ -24,6 +24,7 @@ descartes/
   data_cmd.py     /DATA FILL, SORT, QUERY, TABLE, FREQUENCY, REGRESSION (pure logic)
   persist.py      .vg1 native JSON, WK1 import/export, DIF, TEXT/NUMBERS import
   fmt.py          number/date display formatting codes + Lotus date serials + WK1 fmt byte
+  macro.py        1-2-3 `{...}` macro language interpreter (pure logic, drives the App)
 ```
 
 **Portability rule:** only `screen.py` and `keys.py` import `curses`. Everything else is
@@ -389,7 +390,24 @@ The acceptance walkthrough of the spec is driven end-to-end in
 
 ## 13. Non-goals
 
-Macros (3.1 `{commands}`), multi-sheet printing, mouse column-resize handles, color
-beyond text modes, multi-line cells. (Multi-sheet workbooks, 3-D ranges, named ranges
-in formulas, cross-sheet /COPY, and /RANGE BACKSOLVE are implemented:
-`/WORKSHEET INSERT/DELETE SHEET`, Ctrl+PgUp/PgDn, `A:C!A1..B2`, `/RANGE BACKSOLVE`.)
+Multi-sheet printing, mouse column-resize handles, color beyond text modes, multi-line
+cells. (Multi-sheet workbooks, 3-D ranges, named ranges in formulas, cross-sheet
+/COPY, /RANGE BACKSOLVE, and `{...}` macros are implemented.)
+
+## 14. Macros (`{...}` command language)
+
+A macro is a label cell whose raw text starts with `{`. It is assigned to a key the
+1-2-3 way: create a single-letter range name (`/RANGE NAME CREATE` with name `M` and
+the macro cell as the range), then press **Alt+M** in READY.
+
+Tokenizer (`macro.py::tokenize_macro`): `{COMMAND args}` commands, `{KEY}` special
+keys (`{LEFT} {RIGHT} {UP} {DOWN} {HOME} {ENDKEY} {PGUP} {PGDN} {INS} {DEL} {BS}
+{TAB} {ENTER} {ESC} {F1}..{F12}`), and bare text between commands is sent to the app
+as keystrokes. Commands: `GOTO cell`, `LET cell,value` (also `PUT`), `BEEP`,
+`RECALC`, `WAIT secs`, `SYSTEM command`, `BRANCH cell`, `CALL cell` / `RETURN`,
+`HALT`, `QUIT` (quits the app), `IF expr` / `ELSE` / `END` (nestable blocks), `LOOK`
+(no-op). Unknown commands halt with a `Macro:` error.
+
+The runner (`MacroRunner`) drives the real UI through `app.handle`, with a step cap
+(10000) and CALL depth cap (16); runaway macros raise `MacroError` instead of hanging.
+Macro cells persist in `.vg1` as ordinary labels.
