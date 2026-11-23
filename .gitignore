@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.vg1
+!tests/**/*.vg1

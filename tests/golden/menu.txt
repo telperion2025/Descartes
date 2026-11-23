@@ -1,0 +1,25 @@
+  WORKSHEET  RANGE  COPY  MOVE  FILE  PRINT  GRAPH  DATA  SYSTEM  ADD-IN        
+A+------------+               LABEL-PREFIX...                                   
+ |GLOBAL      +-------------+                                                   
+ |INSERT      |LABEL-PREFIX |C        D        E        F        G        H     
+ |DELETE      |COL-PREFIX   |                                                   
+ |ERASE       |ZERO-SUPPRESS|                                                   
+ |COLUMN-WIDTH|FORMAT       |                                                   
+ |HIDE        |RECALCULATION|                                                   
+ |UNHIDE      |PROTECTION   |                                                   
+ |WINDOW      +-------------+                                                   
+ |TITLES      |                                                                 
+ |STATUS      |                                                                 
+ |PAGE        |                                                                 
+ +------------+                                                                 
+    11|                                                                         
+    12|                                                                         
+    13|                                                                         
+    14|                                                                         
+    15|                                                                         
+    16|                                                                         
+    17|                                                                         
+    18|                                                                         
+                       INS                                             <CLOCK>
+                                                                                
+                                                                                
