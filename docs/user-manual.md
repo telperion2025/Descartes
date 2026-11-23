@@ -137,12 +137,12 @@ current entry reverse-highlighted:
 - **PRINT** — PRINTER (piped to a command, `$PAGER`, or `DESCARTES_PRINTER`), FILE,
   RANGE, LINES-PAGE, MARGINS, BORDERS, HEADER
 - **GRAPH** — TYPE (LINE/BAR/XY/STACKED-BAR/PIE), X-RANGE, A..F series, RESET, VIEW,
-  SAVE, OPTIONS (LEGEND/TITLES/GRID/SCALE)
+  SAVE, OPTIONS (LEGEND/FORMAT/TITLES/GRID/SCALE)
 - **DATA** — FILL, TABLE (1/2-variable), SORT (DATA-RANGE, PRIMARY/SECONDARY-KEY, RESET,
   GO), QUERY (INPUT, CRITERION, OUTPUT, UNIQUE, FIND/DELETE/EXTRACT), FREQUENCY,
   REGRESSION
-- **SYSTEM** — run a shell command and show its output in a scroll buffer; any key
-  returns
+- **SYSTEM** — run a shell command and show its output in a centered bordered window;
+  any key returns
 - **ADD-IN** — stub: "No add-ins loaded"
 
 The full reference with every prompt is in the
@@ -158,7 +158,8 @@ The full reference with every prompt is in the
 - `/FILE XTRACT` exports a range as WK1, DIF, or text.
 - `/FILE COMBINE COPY|ADD|SUBTRACT` merges another file into the current sheet.
 - `/FILE IMPORT DIF|TEXT|NUMBERS` imports at a chosen anchor cell. DIF and text import
-  carry numbers and plain text only (no formula reconstruction).
+  carry numbers and plain text only (no formula reconstruction); imported strings are
+  always labels, even if they start with `+` or `=`.
 - `/FILE LIST` and `/FILE DIRECTORY` browse the filesystem.
 
 ## 7. Printing
@@ -218,5 +219,5 @@ protocol simply stay keyboard-only; unexpected mouse bytes never leak into cell 
 
 ## 11. Help
 
-F1 shows the function-key help screen. `/WORKSHEET STATUS` shows the current cell, recalc
-mode, cell count, and CALC state.
+F1 shows the function-key help screen in a centered bordered window; any key returns.
+`/WORKSHEET STATUS` shows the current cell, recalc mode, cell count, and CALC state.

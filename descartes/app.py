@@ -18,8 +18,9 @@ from . import persist
 from .engine import (Engine, FormulaSyntaxError, adjust_refs, parse, serialize,
                      shift_raw)
 from .grid import (EMPTY, FORMULA, LABEL, MAX_COLS, MAX_ROWS, NUMBER, Worksheet,
-                   col_letters, format_address, format_range, normalize_corners,
-                   parse_address, range_cells, split_range, VALUE_START)
+                   classify_entry, col_letters, format_address, format_range,
+                   normalize_corners, parse_address, range_cells, split_range,
+                   VALUE_START)
 from .graph import GraphDef
 from .keys import MouseParser, read_event
 from .menus import MENU_TREE, TOP_LABELS, MenuState
@@ -134,6 +135,8 @@ class App:
         self.running = True
         self.last_click = (0.0, -1, -1, 0)   # time, x, y, count
         self.mouse_parser = MouseParser()
+        self.sel_range = None
+        self._drag_anchor = None
         self.sort_state = {"range": None, "keys": []}
         self.query_state = {"input": None, "criterion": None, "output": None,
                             "unique": False}
@@ -188,7 +191,7 @@ class App:
             "r_format": lambda a: self.cmd_range_format(split_range(a[0]), a[1]),
             "r_erase": lambda a: self.cmd_range_erase(split_range(a[0])),
             "r_name_create": lambda a: self.cmd_name_create(a[0], split_range(a[1])),
-            "r_name_delete": lambda a: self.names.pop(a[0].upper(), None) or self.message_msg("Name deleted"),
+            "r_name_delete": lambda a: self.cmd_name_delete(a[0]),
             "r_name_reset": lambda a: self.names.clear() or self.message_msg("Names reset"),
             "r_name_table": lambda a: self.message_msg(f"{len(self.names)} names"),
             "r_name_labels": lambda a: self.cmd_name_labels(split_range(a[0]), a[1].upper()),
@@ -231,6 +234,8 @@ class App:
             "g_view": lambda a: self.cmd_graph_view(),
             "g_save": lambda a: self.message_msg("Graph saved as " + a[0]),
             "g_opt_legend": lambda a: self.message_msg("Legend: " + a[0]),
+            "g_opt_format": lambda a: (self.graph.options.update(format=a[0]),
+                                       self.message_msg("Graph format: " + a[0])),
             "g_opt_titles": lambda a: setattr(self.graph, "title", a[0]),
             "g_opt_grid": lambda a: None,
             "g_opt_scale": lambda a: self.message_msg("Auto scale"),
@@ -465,6 +470,12 @@ class App:
             self.mode = READY
             self.entry = ""
             return
+        if classify_entry(raw)[0] == FORMULA:
+            try:
+                parse(raw)
+            except FormulaSyntaxError as e:
+                self.error = f"ERROR: {e}"
+                return
         if cell is not None and cell.kind == FORMULA:
             self.engine.unregister(key)
         try:
@@ -472,15 +483,6 @@ class App:
         except ValueError as e:
             self.error_msg(str(e))
             return
-        if new.kind == FORMULA:
-            try:
-                parse(new.raw)
-            except FormulaSyntaxError as e:
-                self.sheet.clear_cell(*key)
-                self.error_msg(f"ERROR: {e}")
-                self.mode = READY
-                self.entry = ""
-                return
         self.engine.note_edit(key)
         self.engine.recalc()
         self.mode = READY
@@ -716,11 +718,15 @@ class App:
             count = 1
         self.last_click = (now, m.x, m.y, count)
         m.click_count = count
-        if m.wheel_up:
-            self.scroll(-1)
-            return
-        if m.wheel_down:
-            self.scroll(1)
+        if m.wheel_up or m.wheel_down:
+            delta = -1 if m.wheel_up else 1
+            if "ctrl" in m.modifiers:
+                c, r = self.top
+                self.top = (max(0, min(MAX_COLS - 1, c + delta)), r)
+                if self.sync_windows and self.split:
+                    self.top2 = self.top
+            else:
+                self.scroll(delta)
             return
         if m.release or m.button == 3:
             return
@@ -756,6 +762,12 @@ class App:
                 self.cur = cell
                 self.submit_point()
                 return
+            if m.drag and self._drag_anchor is not None:
+                self.cur = cell
+                self.sel_range = normalize_corners(self._drag_anchor, cell)
+                return
+            self.sel_range = None
+            self._drag_anchor = cell
             self.move(*cell)
             if count >= 2:
                 self.start_edit()
@@ -910,8 +922,6 @@ class App:
 
     def error_msg(self, msg):
         self.error = msg
-        if self.mode not in (ERROR,):
-            self.prev_mode = self.mode
         self.mode = ERROR
 
     def unwind(self, msg):
@@ -1033,6 +1043,13 @@ class App:
     def cmd_name_create(self, name, rng):
         self.names[name.upper()] = {"sheet": self.sheet.name, "range": rng}
         self.message_msg(f"Name {name.upper()} = {format_range(*rng)}")
+
+    def cmd_name_delete(self, name):
+        if name.upper() in self.names:
+            del self.names[name.upper()]
+            self.message_msg("Name deleted")
+        else:
+            self.error_msg(f"No such name: {name}")
 
     def cmd_name_labels(self, rng, pos):
         (c1, r1), (c2, r2) = rng

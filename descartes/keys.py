@@ -7,11 +7,6 @@ from __future__ import annotations
 
 import curses
 
-try:
-    _ESCDELAY_DEFAULT = 25
-except Exception:  # pragma: no cover
-    _ESCDELAY_DEFAULT = 25
-
 
 class KeyEvent:
     """Normalized key event. kind: 'char' | 'key' | 'mouse' | 'paste' | 'resize'."""
@@ -156,7 +151,7 @@ def _parse_legacy(b: bytes):
     button = cb & 0x03
     wheel_up = bool(cb & 0x40) and button == 0
     wheel_down = bool(cb & 0x40) and button == 1
-    press = not (cb & 0x20) or True
+    press = not bool(cb & 0x20)
     return MouseEvent(cx - 1, cy - 1, button=button, press=press,
                       wheel_up=wheel_up, wheel_down=wheel_down,
                       drag=bool(cb & 0x20),
@@ -260,7 +255,6 @@ def read_event(stdscr, escdelay_ms: int = 25) -> KeyEvent | None:
                 ch = junk.decode("latin-1")
                 return KeyEvent("char", ch=ch, name="ALT+" + ch)
             return KeyEvent("key", name="ESC")
-        return KeyEvent("key", name="ESC")
         return KeyEvent("key", name="ESC")
     name = decode_code(code)
     if name is None:

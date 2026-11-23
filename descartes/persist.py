@@ -19,7 +19,8 @@ from . import fmt as _fmt
 from .engine import Engine, FormulaSyntaxError, parse, serialize
 from .grid import (EMPTY, FORMULA, LABEL, NUMBER, Cell, Worksheet,
                    col_index, col_letters, format_address, format_range,
-                   normalize_corners, parse_address, range_cells, split_range)
+                   normalize_corners, parse_address, parse_number_literal,
+                   range_cells, split_range)
 
 VG1_FORMAT = "descartes-vg1"
 VG1_VERSION = 1
@@ -410,10 +411,16 @@ def write_wk1(path, sheet: Worksheet, engine: Engine | None = None):
             payload = struct.pack("<BHH", fb, c, r) + prefix.encode("cp437") + \
                 text.encode("cp437", "replace") + b"\0"
             out += struct.pack("<HH", WK1_LABEL, len(payload)) + payload
-        elif cell.kind == FORMULA and engine is not None and (c, r) in engine.formulas:
-            comp = engine.formulas[(c, r)]
-            tokens = _infix_to_rpn(comp.ast, r, c)
-            value = cell.value if isinstance(cell.value, (int, float)) else 0.0
+        elif cell.kind == FORMULA:
+            comp = engine.formulas.get((c, r)) if engine is not None else None
+            tokens = _infix_to_rpn(comp.ast, r, c) if comp is not None else None
+            if tokens is None:
+                try:
+                    tokens = _infix_to_rpn(parse("+@ERR()"), r, c)
+                except FormulaSyntaxError:
+                    tokens = None
+            value = cell.value if isinstance(cell.value, (int, float)) \
+                and not isinstance(cell.value, bool) else 0.0
             if tokens is None:
                 payload = struct.pack("<BHH", fb, c, r) + struct.pack("<d", float(value))
                 out += struct.pack("<HH", WK1_NUMBER, len(payload)) + payload
@@ -479,7 +486,7 @@ def read_dif(path) -> Worksheet:
                 s = lines[i + 1].strip()
                 if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
                     s = s[1:-1]
-                ws.set_entry(col, row, s)
+                ws.set_entry(col, row, "'" + s)
                 i += 2
                 col += 1
                 continue
@@ -546,14 +553,16 @@ def read_text_import(path, numbers_only=False) -> Worksheet:
                 col += 1
                 continue
             if len(field) >= 2 and field.startswith('"') and field.endswith('"'):
-                ws.set_entry(col, row, field[1:-1].replace('""', '"'))
+                ws.set_entry(col, row, "'" + field[1:-1].replace('""', '"'))
             elif numbers_only:
                 try:
                     ws.set_entry(col, row, _fmt.general_number(float(field.rstrip("%"))))
                 except ValueError:
                     pass
-            else:
+            elif parse_number_literal(field) is not None:
                 ws.set_entry(col, row, field)
+            else:
+                ws.set_entry(col, row, "'" + field)
             col += 1
         row += 1
     return ws

@@ -191,6 +191,7 @@ MENU_TREE = [
         _m("SAVE", action="g_save", prompt=[{"text": "Graph name:", "kind": "text"}]),
         _m("OPTIONS", [
             _m("LEGEND", action="g_opt_legend", prompt=[{"text": "Legend text:", "kind": "text"}]),
+            _m("FORMAT", action="g_opt_format", prompt=[{"text": "Graph format:", "kind": "text"}]),
             _m("TITLES", action="g_opt_titles", prompt=[{"text": "Graph title:", "kind": "text"}]),
             _m("GRID", action="g_opt_grid"),
             _m("SCALE", action="g_opt_scale"),

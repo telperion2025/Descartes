@@ -196,3 +196,142 @@ class TestLoadRestoresState:
         assert app.cur == (255, 8191)
         draw(app)
         assert app.running
+
+
+class TestSubmitEntrySyntaxError:
+    def test_bad_formula_preserves_cell_and_stays_in_edit(self, make_app):
+        app, win = make_app()
+        type_text(app, "5")
+        press(app, "ENTER")
+        press(app, "UP")
+        press(app, "F2")
+        press(app, "HOME")
+        press(app, "DEL")
+        type_text(app, "+A1+")
+        press(app, "ENTER")
+        assert app.running
+        assert app.mode == "EDIT"
+        assert app.sheet.value_at(0, 0) == 5.0
+        assert app.error.startswith("ERROR")
+
+
+class TestImportLabels:
+    def test_dif_string_stays_label(self, tmp_path):
+        from descartes.grid import LABEL
+        from descartes.persist import read_dif
+        p = tmp_path / "t.dif"
+        p.write_text('TABLE\r\n0,1\r\n"x"\r\nVECTORS\r\n0,1\r\n"COL"\r\n'
+                     'TUPLES\r\n0,1\r\nDATA\r\n0,0\r\n""\r\nS\r\n"+1+1"\r\n-1,0\r\nEOD\r\n')
+        ws = read_dif(str(p))
+        assert ws.kind_at(0, 0) == LABEL
+        assert ws.value_at(0, 0) == "+1+1"
+
+    def test_text_import_strings_stay_labels(self, tmp_path):
+        from descartes.grid import LABEL, NUMBER
+        from descartes.persist import read_text_import
+        p = tmp_path / "t.txt"
+        p.write_text('"+1+1",plain,42,"50%"\n')
+        ws = read_text_import(str(p))
+        assert ws.kind_at(0, 0) == LABEL and ws.value_at(0, 0) == "+1+1"
+        assert ws.kind_at(1, 0) == LABEL and ws.value_at(1, 0) == "plain"
+        assert ws.kind_at(2, 0) == NUMBER and ws.value_at(2, 0) == 42.0
+        assert ws.kind_at(3, 0) == LABEL and ws.value_at(3, 0) == "50%"
+
+
+class TestWk1ExportErrFormula:
+    def test_uncompilable_formula_exported_not_dropped(self, tmp_path):
+        from descartes.engine import Engine
+        from descartes.persist import read_wk1, write_wk1
+        ws = Worksheet()
+        ws.set_entry(0, 0, "+1/0")
+        ws.set_entry(0, 1, "+B1++")
+        eng = Engine(ws)
+        eng.register_all()
+        eng.recalc(force=True)
+        path = str(tmp_path / "e.wk1")
+        write_wk1(path, ws, eng)
+        ws2 = read_wk1(path)["sheets"]["A"]
+        assert ws2.cell(0, 1) is not None
+        assert "ERR" in (ws2.raw_at(0, 1) or "")
+
+
+class TestSortBlanksAndRefs:
+    def test_blanks_sort_last_both_directions(self, make_app):
+        from descartes.grid import split_range
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "3")
+        app.sheet.set_entry(0, 2, "1")
+        app.engine.register_all()
+        app.engine.recalc(force=True)
+        app.sort_state.update(range=split_range("A1..A3"))
+        app._set_sort_key(0, ("A1", "YES"))
+        app.cmd_sort_go()
+        assert [app.sheet.value_at(0, r) for r in range(3)] == [1.0, 3.0, None]
+        app._set_sort_key(0, ("A1", "NO"))
+        app.cmd_sort_go()
+        assert [app.sheet.value_at(0, r) for r in range(3)] == [3.0, 1.0, None]
+
+    def test_sort_shifts_formula_refs_with_row(self, make_app):
+        from descartes.grid import split_range
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "2")
+        app.sheet.set_entry(0, 1, "1")
+        app.sheet.set_entry(1, 0, "+A1")
+        app.sheet.set_entry(1, 1, "+A2")
+        app.engine.register_all()
+        app.engine.recalc(force=True)
+        app.sort_state.update(range=split_range("A1..B2"))
+        app._set_sort_key(0, ("A1", "YES"))
+        app.cmd_sort_go()
+        assert app.sheet.value_at(0, 0) == 1.0
+        assert app.sheet.value_at(1, 0) == 1.0
+        assert "A1" in app.sheet.raw_at(1, 0)
+
+
+class TestMouseDragAndCtrlWheel:
+    def test_drag_extends_selection(self, make_app):
+        from descartes.keys import KeyEvent, MouseEvent
+        from descartes.screen import P_CURSOR, P_HILITE
+        app, win = make_app()
+        app.handle(KeyEvent("mouse", mouse=MouseEvent(7, 4, button=0, press=True)))
+        assert app.cur == (0, 0)
+        app.handle(KeyEvent("mouse", mouse=MouseEvent(7 + 2 * 9, 4 + 2, button=0,
+                                                       press=True, drag=True)))
+        assert app.cur == (2, 2)
+        assert app.sel_range == ((0, 0), (2, 2))
+        draw(app)
+        assert win.attrs[4][7] == app.screen.a(P_HILITE)
+        assert win.attrs[6][7 + 2 * 9] == app.screen.a(P_CURSOR)
+
+    def test_ctrl_wheel_scrolls_horizontally(self, make_app):
+        from descartes.keys import KeyEvent, MouseEvent
+        app, win = make_app()
+        app.top = (5, 0)
+        app.handle(KeyEvent("mouse", mouse=MouseEvent(10, 10, wheel_up=True,
+                                                       modifiers={"ctrl"})))
+        assert app.top[0] == 4
+        app.handle(KeyEvent("mouse", mouse=MouseEvent(10, 10, wheel_down=True,
+                                                       modifiers={"ctrl"})))
+        assert app.top[0] == 5
+
+
+class TestMenuAndMisc:
+    def test_graph_options_has_format(self):
+        from descartes.menus import MENU_TREE
+        graph = next(m for m in MENU_TREE if m.label == "GRAPH")
+        opts = next(m for m in graph.children if m.label == "OPTIONS")
+        assert any(m.label == "FORMAT" for m in opts.children)
+
+    def test_name_delete_unknown_reports_error(self, make_app):
+        app, win = make_app()
+        app._actions["r_name_delete"](["NOPE"])
+        assert app.error != ""
+        app.names["TOTAL"] = {"sheet": "A", "range": ((0, 0), (0, 0))}
+        app._actions["r_name_delete"](["total"])
+        assert "TOTAL" not in app.names
+        assert app.error == ""
+
+    def test_control_panel_shows_addr_colon_mode(self, make_app):
+        app, win = make_app()
+        draw(app)
+        assert win.text()[1].startswith("A1: READY")

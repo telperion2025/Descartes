@@ -117,7 +117,10 @@ fictitious 1900-02-29 at serial 60, so 1900-03-01 = 61).
 
 The 1-2-3 **sort order** for `/DATA SORT` and `/FIND` is distinct from general text
 comparison: numbers first, then text as digits `0-9` < `A-Z` < `a-z` (implemented as
-`data_cmd.lotus_sort_key`).
+`data_cmd.lotus_sort_key`). Rows whose primary key is blank always sort last, in both
+directions. Formula cells inside a sorted range keep their relative references pointing
+at the same row content (references are shifted with the row, `$` preserved, as in a
+/MOVE).
 
 ## 5. Format codes
 
@@ -146,7 +149,7 @@ Fixed 80-column layout, absolute coordinates (0-based rows in code, 1-based as p
 | row (1-based) | content |
 | --- | --- |
 | 1 | menu bar (blank blue bar in READY; menu tree in MENU) |
-| 2 | control panel: `A1  READY` left, prompt right |
+| 2 | control panel: `A1: READY` left, prompt right |
 | 3 | cell content line (raw text of highlighted cell) |
 | 4 | column headers (current column highlighted); gutter = 7 chars |
 | 5-22 | worksheet rows |
@@ -169,6 +172,12 @@ Mono terminals use `A_REVERSE` for the menu/panel/highlight/cursor pairs.
 | 7 | black/white + bold | cursor cell (reverse video, as in 1-2-3) |
 | 8 | black/cyan | control panel (rows 2-3) and indicator line (row 23) |
 
+Every frame paints the full terminal height with the worksheet background first, so
+taller windows show no unpainted strip. The SYSTEM (`/SYSTEM`) and HELP (F1) views render
+as a centered, bordered, opaque overlay window (blue border with title, cyan interior);
+any key dismisses it back to READY. GRAPH VIEW is a full-area text viewport, any key
+returns.
+
 ## 7. Slash command reference
 
 Top level: `WORKSHEET RANGE COPY MOVE FILE PRINT GRAPH DATA SYSTEM ADD-IN`
@@ -181,6 +190,11 @@ Top level: `WORKSHEET RANGE COPY MOVE FILE PRINT GRAPH DATA SYSTEM ADD-IN`
           PROTECTION  ENABLE | DISABLE
   INSERT  COLUMN | ROW          (prompt: cell)
   DELETE  COLUMN | ROW          (prompt: cell)
+
+INSERT/DELETE adjust formula references like 1-2-3: every reference (including `$`
+absolute ones) at or beyond the edit point shifts by the inserted/deleted amount, ranges
+spanning the point expand/contract, and a single-cell reference into a deleted range
+becomes `@ERR()` (`engine.adjust_refs`).
   ERASE                         (prompt: range)
   COLUMN-WIDTH  SET (width, column) | RESET (column)
   HIDE | UNHIDE                 (prompt: column cell)
@@ -277,7 +291,9 @@ macOS/BSD for snappy Alt-keys.
 }
 ```
 
-Cells are ordered deterministically by (sheet, row, col) for clean diffs.
+Cells are ordered deterministically by (sheet, row, col) for clean diffs. Loading a
+`.vg1` restores everything saved: cells, widths, names, recalc mode, cursor (clamped into
+range), graph definitions, print settings, and window split/titles.
 
 ### 10.2 WK1 (Lotus 1-2-3 Release 2.x binary) — import/export
 
@@ -327,8 +343,9 @@ The WK1 format byte: bit 7 protected, bits 4-6 type (0 fixed, 1 sci, 2 currency,
 | F1..F12 | terminfo | `TERM=xterm-256color` fine; raw `\x1bOP..` fallback |
 | colors | 8/256 via `curses.COLORS` feature-detect | iTerm2/Terminal.app also 256 |
 
-Must work over ssh and inside tmux/screen. UTF-8 preferred but not required: cell
-rendering clips to the display width and graph bars fall back to `#`.
+Must work over ssh and inside tmux/screen. UTF-8 is detected from the locale
+(`locale.getpreferredencoding`) at startup; when the locale is not UTF-8, cell rendering
+still clips to the display width and graph glyphs fall back to ASCII (`#`, `o#*+x.`).
 
 ## 12. Testing
 

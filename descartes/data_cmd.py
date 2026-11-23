@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import math
 
-from .engine import Engine, FormulaSyntaxError, parse, shift, serialize
+from .engine import (Engine, FormulaSyntaxError, parse, shift, serialize,
+                     shift_raw)
 from .functions import Error, lotus_compare
 from .grid import (FORMULA, LABEL, NUMBER, Worksheet, normalize_corners,
                    range_cells)
@@ -93,15 +94,32 @@ def sort_range(sheet: Worksheet, engine: Engine, rng, keys):
             parts.append(k if asc else _invert(k))
         return tuple(parts)
 
-    order = sorted(range(len(rows)), key=lambda i: keyfn(rows[i]))
+    def is_blank(i):
+        off = keys[0][0]
+        cell = rows[i][off] if 0 <= off < len(rows[i]) else None
+        return cell is None or cell.value is None
+
+    idx = list(range(len(rows)))
+    nonblank = [i for i in idx if not is_blank(i)]
+    blanks = [i for i in idx if is_blank(i)]
+    order = sorted(nonblank, key=lambda i: keyfn(rows[i])) + blanks
     for new_r, old_i in enumerate(order):
         r = r1 + new_r
+        dr = new_r - old_i
         for c_off, old_cell in enumerate(rows[old_i]):
             c = c1 + c_off
             if old_cell is None:
                 sheet.clear_cell(c, r)
             else:
-                sheet.cells[(c, r)] = old_cell
+                new_cell = old_cell
+                if dr:
+                    new_cell = old_cell.copy()
+                    if new_cell.kind == FORMULA:
+                        try:
+                            new_cell.raw = shift_raw(new_cell.raw, 0, dr)
+                        except FormulaSyntaxError:
+                            pass
+                sheet.cells[(c, r)] = new_cell
     engine.register_all()
     engine.recalc(force=True)
 

@@ -206,7 +206,7 @@ class Screen:
     def draw_control(self, app):
         addr = format_address(app.cur[0], app.cur[1])
         mode = app.mode
-        left = f"{addr}  {mode}"
+        left = f"{addr}: {mode}"
         self.put(ROW_CONTROL, 0, " " * self.size()[1], self.a(P_PANEL))
         self.put(ROW_CONTROL, 0, left.ljust(30), self.a(P_PANEL))
         right = ""
@@ -312,6 +312,8 @@ class Screen:
                 elif app.mode == "POINT" and app.point_range and \
                         _in_range(app.point_range, c, r):
                     a = self.a(P_HILITE)
+                elif app.sel_range and _in_range(app.sel_range, c, r):
+                    a = self.a(P_HILITE)
                 self.put(y, x, text[:cw], a)
                 x += cw
                 c += 1
@@ -341,7 +343,7 @@ class Screen:
         inds.append("NUM" if app.numlock else "   ")
         inds.append("SCRL" if app.scroll_lock else "    ")
         inds.append("CALC" if app.engine.needs_calc() else "    ")
-        inds.append("MEM" if False else "   ")
+        inds.append("   ")
         inds.append("OVR" if app.overwrite else "INS")
         left = " ".join(inds)
         now = datetime.datetime.now()
