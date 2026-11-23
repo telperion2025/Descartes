@@ -208,3 +208,34 @@ class TestInputCommands:
         app.sheet.set_entry(3, 0, "{DEFINE ALL: A:B!A1..A1}")
         MacroRunner(app).run_cell((3, 0))
         assert app.names["ALL"].get("sheets") == ["A", "B"]
+
+
+class TestForLoop:
+    def test_for_loop(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(3, 0, "{FOR A1, 1, 3}{LET B1, +A1}{FOREND}{LET C1, 99}")
+        MacroRunner(app).run_cell((3, 0))
+        assert app.sheet.value_at(0, 0) == 3.0
+        assert app.sheet.value_at(1, 0) == 3.0
+        assert app.sheet.value_at(2, 0) == 99.0
+
+    def test_for_step_down_and_forbreak(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(3, 0, "{FOR A1, 5, 1, -1}{IF A1=2}{FORBREAK}{END}{LET B1, +A1}{FOREND}")
+        MacroRunner(app).run_cell((3, 0))
+        assert app.sheet.value_at(0, 0) == 2.0
+        assert app.sheet.value_at(1, 0) == 2.0   # B1=+A1 is a formula; follows the counter
+
+    def test_nested_for(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(3, 0, "{FOR A1, 1, 2}{FOR B1, 1, 2}{LET C1, +A1*10+B1}{FOREND}{FOREND}")
+        MacroRunner(app).run_cell((3, 0))
+        assert app.sheet.value_at(0, 0) == 2.0
+        assert app.sheet.value_at(1, 0) == 2.0
+        assert app.sheet.value_at(2, 0) == 22.0
+
+    def test_for_without_forend_errors(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(3, 0, "{FOR A1, 1, 2}{LET B1, 1}")
+        with pytest.raises(MacroError):
+            MacroRunner(app).run_cell((3, 0))

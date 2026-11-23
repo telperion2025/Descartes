@@ -725,11 +725,6 @@ def write_wk1(path, sheet: Worksheet, engine: Engine | None = None):
         elif cell.kind == FORMULA:
             comp = engine.formulas.get((c, r)) if engine is not None else None
             tokens = _infix_to_rpn(comp.ast, r, c) if comp is not None else None
-            if tokens is None:
-                try:
-                    tokens = _infix_to_rpn(parse("+@ERR()"), r, c)
-                except FormulaSyntaxError:
-                    tokens = None
             value = cell.value if isinstance(cell.value, (int, float)) \
                 and not isinstance(cell.value, bool) else 0.0
             if tokens is None:

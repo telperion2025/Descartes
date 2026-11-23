@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import time
 
+from . import fmt as _fmt
 from .engine import Ctx, compile_node, parse
 from .grid import is_valid_name, parse_address, split_range_any
 from .keys import KeyEvent
@@ -30,7 +31,8 @@ KEY_ALIASES = {"ENDKEY": "END"}
 
 COMMANDS = {"GOTO", "LET", "PUT", "BEEP", "RECALC", "WAIT", "SYSTEM", "BRANCH",
             "CALL", "RETURN", "HALT", "QUIT", "IF", "ELSE", "END", "LOOK",
-            "INPUT", "GETNUMBER", "GETLABEL", "MENUBRANCH", "DEFINE"}
+            "INPUT", "GETNUMBER", "GETLABEL", "MENUBRANCH", "DEFINE",
+            "FOR", "FOREND", "FORBREAK"}
 
 
 class MacroError(Exception):
@@ -129,6 +131,20 @@ def _find_end(toks, start):
     raise MacroError("ELSE without END")
 
 
+def _find_for_end(toks, start):
+    """Index of the FOREND matching the FOR at `start` (nesting-aware)."""
+    depth = 0
+    for i in range(start, len(toks)):
+        t = toks[i]
+        if t[0] == "cmd" and t[1] == "FOR":
+            depth += 1
+        elif t[0] == "cmd" and t[1] == "FOREND":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise MacroError("FOR without FOREND")
+
+
 class MacroRunner:
     def __init__(self, app, max_steps=10000, max_depth=16):
         self.app = app
@@ -137,15 +153,18 @@ class MacroRunner:
         self.steps = 0
         self.stack = []
         self.suspended = None
+        self._for_stack = []
 
     def resume(self):
         """Continue a macro suspended by {INPUT}/{GETNUMBER}/{GETLABEL}."""
         if not self.suspended:
             return
-        toks, pc, fkey = self.suspended
+        toks, pc, fkey, stop = self.suspended
         self.suspended = None
         try:
-            self._exec(toks, pc, fkey)
+            self._exec(toks, pc, fkey, stop)
+            while self._for_stack and not self.suspended:
+                self._for_step()
         except RecursionError:
             raise MacroError("macro recursion too deep")
 
@@ -160,14 +179,16 @@ class MacroRunner:
             raise MacroError(f"{key} is not a macro cell")
         self.stack = []
         self.suspended = None
+        self._for_stack = []
         try:
             self._exec(tokenize_macro(raw), 0, key)
         except RecursionError:
             raise MacroError("macro recursion too deep")
 
-    def _exec(self, toks, start, fkey):
+    def _exec(self, toks, start, fkey, stop=None):
         pc = start
-        while pc < len(toks):
+        end = len(toks) if stop is None else stop
+        while pc < end:
             if not getattr(self.app, "running", True) or self.suspended:
                 break
             self._tick()
@@ -190,11 +211,61 @@ class MacroRunner:
                 toks = tokenize_macro(raw)
                 fkey = (c, r)
                 pc = 0
+                end = len(toks)
+            elif t[0] == "cmd" and t[1] == "FOR":
+                pc = self._do_for(toks, pc, fkey, stop)
+                end = len(toks) if stop is None else stop
             elif t[0] == "cmd":
                 _, name, args = t
-                pc = self._cmd(toks, pc, name, args, fkey)
+                pc = self._cmd(toks, pc, name, args, fkey, stop)
             else:
                 pc += 1
+
+    def _let(self, c, r, v):
+        app = self.app
+        app.sheet.set_entry(c, r, _fmt.general_number(float(v)))
+        app.engine.note_edit((c, r))
+        app._touch(app.active, (c, r))
+        app._recalc()
+
+    def _do_for(self, toks, pc, fkey, stop):
+        a = split_args(toks[pc][2])
+        if len(a) not in (3, 4):
+            raise MacroError("{FOR} needs counter, start, end[, step]")
+        cc, cr = parse_address(a[0])
+        try:
+            start = float(a[1])
+            end = float(a[2])
+            step = float(a[3]) if len(a) == 4 else 1.0
+        except ValueError:
+            raise MacroError("{FOR} needs numeric start, end[, step]")
+        if step == 0:
+            raise MacroError("{FOR} step must not be 0")
+        fend = _find_for_end(toks, pc)
+        self._for_stack.append({"toks": toks, "pc": pc, "fkey": fkey, "stop": stop,
+                                "fend": fend, "step": step, "end": end,
+                                "cell": (cc, cr), "v": start, "done": False})
+        return self._for_step()
+
+    def _for_step(self):
+        st = self._for_stack[-1]
+        toks, fkey, fend = st["toks"], st["fkey"], st["fend"]
+        step, end, cell = st["step"], st["end"], st["cell"]
+        v = st["v"]
+        if st.get("pending"):
+            v += step
+            st["pending"] = False
+        while not st["done"] and ((step > 0 and v <= end) or (step < 0 and v >= end)):
+            self._let(cell[0], cell[1], v)
+            self._exec(toks, st["pc"] + 1, fkey, stop=fend)
+            if self.suspended:
+                st["v"] = v
+                st["pending"] = True
+                return len(toks)
+            v += step
+            st["v"] = v
+        self._for_stack.pop()
+        return fend + 1
 
     def _eval_cond(self, expr, fkey):
         from .functions import Error
@@ -211,7 +282,7 @@ class MacroRunner:
             return v != ""
         return bool(v)
 
-    def _cmd(self, toks, pc, name, args, fkey):
+    def _cmd(self, toks, pc, name, args, fkey, stop=None):
         app = self.app
         if name == "GOTO":
             c, r = parse_address(args)
@@ -253,7 +324,7 @@ class MacroRunner:
                 raise MacroError("{INPUT} requires /RANGE INPUT first")
             app.move(*rng[0])
             app.begin_macro_wait("input", "Enter data:", None, self)
-            self.suspended = (toks, pc + 1, fkey)
+            self.suspended = (toks, pc + 1, fkey, stop)
             return len(toks)
         if name in ("GETNUMBER", "GETLABEL"):
             a = split_args(args)
@@ -265,7 +336,7 @@ class MacroRunner:
             c, r = parse_address(a[1])
             app.begin_macro_wait("number" if name == "GETNUMBER" else "text",
                                  prompt, (c, r), self)
-            self.suspended = (toks, pc + 1, fkey)
+            self.suspended = (toks, pc + 1, fkey, stop)
             return len(toks)
         if name == "MENUBRANCH":
             c, r = parse_address(args)
@@ -297,14 +368,21 @@ class MacroRunner:
             raw = app.sheet.raw_at(c, r)
             if raw is None or not raw.startswith("{"):
                 raise MacroError(f"CALL target {args} is not a macro")
-            self.stack.append((toks, pc + 1, fkey))
+            self.stack.append((toks, pc + 1, fkey, stop))
             self._exec(tokenize_macro(raw), 0, (c, r))
             return len(toks)
         if name == "RETURN":
             if self.stack:
-                toks2, pc2, fkey2 = self.stack.pop()
-                self._exec(toks2, pc2, fkey2)
+                toks2, pc2, fkey2, stop2 = self.stack.pop()
+                self._exec(toks2, pc2, fkey2, stop2)
             return len(toks)
+        if name == "FOREND":
+            return pc + 1
+        if name == "FORBREAK":
+            if self._for_stack:
+                self._for_stack[-1]["done"] = True
+                return self._for_stack[-1]["fend"] + 1
+            return pc + 1
         if name in ("HALT", "QUIT"):
             if name == "QUIT":
                 app.quit()

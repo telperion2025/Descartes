@@ -331,3 +331,30 @@ class TestWk3Read:
         data = _persist.import_file(str(p))
         assert list(data["sheets"]) == ["A"]
         assert data["sheets"]["A"].value_at(0, 0) == 5.0
+
+
+class TestWk1Export:
+    def test_3d_formula_exports_cached_value(self, make_app, tmp_path):
+        app, win = make_app()
+        app.cmd_insert_sheet()
+        app.sheets["B"].set_entry(0, 0, "42")
+        app.active = "A"
+        app.sheet.set_entry(0, 0, "+B!A1")
+        app._register_all()
+        app._recalc(force=True)
+        assert app.sheet.value_at(0, 0) == 42.0
+        p = tmp_path / "out.wk1"
+        _persist.write_wk1(str(p), app.sheet, app.engine)
+        data = _persist.read_wk1(str(p))
+        assert data["sheets"]["A"].value_at(0, 0) == 42.0
+
+    def test_xtract_wk1_uses_active_sheet(self, make_app, tmp_path):
+        app, win = make_app()
+        app.sheets["A"].set_entry(0, 0, "1")
+        app.cmd_insert_sheet()
+        app.sheet.set_entry(0, 0, "7")
+        assert app.active == "B"
+        p = tmp_path / "b.wk1"
+        app.cmd_xtract(str(p), split_range("A1..A1"), "WK1")
+        data = _persist.read_wk1(str(p))
+        assert data["sheets"]["A"].value_at(0, 0) == 7.0
