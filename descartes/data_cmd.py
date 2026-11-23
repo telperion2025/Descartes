@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import math
 
-from .engine import (Engine, FormulaSyntaxError, parse, shift, serialize,
-                     shift_raw)
+from .engine import (Engine, FormulaSyntaxError, parse, remap_rows_raw, shift,
+                     serialize, shift_raw)
 from .functions import Error, lotus_compare
 from .grid import (FORMULA, LABEL, NUMBER, Worksheet, normalize_corners,
                    range_cells)
@@ -103,20 +103,20 @@ def sort_range(sheet: Worksheet, engine: Engine, rng, keys):
     nonblank = [i for i in idx if not is_blank(i)]
     blanks = [i for i in idx if is_blank(i)]
     order = sorted(nonblank, key=lambda i: keyfn(rows[i])) + blanks
+    row_map = {r1 + old_i: r1 + new_r for new_r, old_i in enumerate(order)}
     for new_r, old_i in enumerate(order):
         r = r1 + new_r
-        dr = new_r - old_i
         for c_off, old_cell in enumerate(rows[old_i]):
             c = c1 + c_off
             if old_cell is None:
                 sheet.clear_cell(c, r)
             else:
                 new_cell = old_cell
-                if dr:
+                if new_r != old_i:
                     new_cell = old_cell.copy()
                     if new_cell.kind == FORMULA:
                         try:
-                            new_cell.raw = shift_raw(new_cell.raw, 0, dr)
+                            new_cell.raw = remap_rows_raw(new_cell.raw, row_map)
                         except FormulaSyntaxError:
                             pass
                 sheet.cells[(c, r)] = new_cell
@@ -276,6 +276,11 @@ def query(sheet: Worksheet, engine: Engine, input_rng, crit_rng,
                     sheet.clear_cell(oc1 + i, out_r)
                 else:
                     cell = src.copy()
+                    if cell.kind == FORMULA:
+                        try:
+                            cell.raw = shift_raw(cell.raw, oc1 - (ic1 + i), out_r - r)
+                        except FormulaSyntaxError:
+                            pass
                     sheet.cells[(oc1 + i, out_r)] = cell
             out_r += 1
         engine.register_all()

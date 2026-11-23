@@ -142,3 +142,45 @@ class TestDeleteSheetNarrows3DRefs:
         app.cmd_delete_sheet("A")
         assert "sheets" not in app.names["TOT"]
         assert app.names["TOT"]["sheet"] == "C"
+
+
+class TestSortRefRemap:
+    def test_refs_into_sorted_band_follow_data(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "3")
+        app.sheet.set_entry(1, 0, "+A1*10")
+        app.sheet.set_entry(0, 1, "1")
+        app.sheet.set_entry(1, 1, "+A2*10")
+        app.sheet.set_entry(0, 2, "2")
+        app.sheet.set_entry(1, 2, "+A3*10")
+        app.sheet.set_entry(3, 0, "+A1")          # outside the sorted range
+        app._register_all()
+        app._recalc(force=True)
+        app.sort_state.update(range=split_range("A1..B3"), keys=[(0, 0, True)])
+        app.cmd_sort_go()
+        assert app.sheet.value_at(0, 0) == 1.0
+        assert app.sheet.value_at(0, 2) == 3.0
+        assert app.sheet.value_at(1, 2) == 30.0   # B followed its row's A-ref
+        assert app.sheet.value_at(3, 0) == 1.0    # D1 ref untouched
+
+
+class TestQueryExtract:
+    def test_extract_shifts_formula_refs(self, make_app):
+        app, win = make_app()
+        app.sheet.set_entry(0, 0, "'h1")
+        app.sheet.set_entry(1, 0, "'h2")
+        app.sheet.set_entry(0, 1, "'x")
+        app.sheet.set_entry(1, 1, "+A2*2")
+        app.sheet.set_entry(0, 2, "'y")
+        app.sheet.set_entry(1, 2, "5")
+        app.sheet.set_entry(3, 0, "'h1")
+        app.sheet.set_entry(3, 1, "'x")
+        app._register_all()
+        app._recalc(force=True)
+        app.query_state.update(input=split_range("A1..B3"),
+                               criterion=split_range("D1..D2"),
+                               output=split_range("F1..G2"))
+        app.cmd_query("extract")
+        assert app.sheet.value_at(5, 1) == "x"
+        g2 = app.sheet.cells[(6, 1)]
+        assert g2.raw == "+E2*2"

@@ -410,6 +410,38 @@ def _sheet_prefix(sheets) -> str:
     return f"{s1}!" if s1 == s2 else f"{s1}:{s2}!"
 
 
+def _remap_corner(corner, row_map):
+    c, r, ac, ar = corner
+    nr = row_map.get(r, r)
+    return (c, nr, ac, ar)
+
+
+def remap_rows(node, row_map):
+    """Rewrite same-sheet refs whose row is in row_map (old row -> new row).
+    Used when a sort permutes rows: refs into the sorted band follow the
+    data, refs elsewhere stay put."""
+    kind = node[0]
+    if kind == "cell":
+        c, r, ac, ar = node[1], node[2], node[3], node[4]
+        nr = row_map.get(r, r)
+        return ("cell", c, nr, ac, ar) if nr != r else node
+    if kind == "range":
+        return ("range", _remap_corner(node[1], row_map), _remap_corner(node[2], row_map))
+    if kind == "bin":
+        return ("bin", node[1], remap_rows(node[2], row_map), remap_rows(node[3], row_map))
+    if kind == "un":
+        return ("un", node[1], remap_rows(node[2], row_map))
+    if kind == "pct":
+        return ("pct", remap_rows(node[1], row_map))
+    if kind == "func":
+        return ("func", node[1], [remap_rows(a, row_map) for a in node[2]])
+    return node
+
+
+def remap_rows_raw(raw: str, row_map: dict) -> str:
+    return "+" + serialize(remap_rows(parse(raw), row_map))
+
+
 def span_names(s1, s2, order):
     """Sheet names spanned by s1:s2 given the workbook sheet order."""
     if s1 not in order or s2 not in order:
